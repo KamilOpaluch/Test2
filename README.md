@@ -1,6 +1,7 @@
+```python
 import tkinter as tk
 from tkinter import ttk
-from tkcalendar import DateEntry
+from tkcalendar import Calendar
 import pandas as pd
 import requests
 from io import BytesIO
@@ -34,8 +35,20 @@ def process_sheet(df):
     data.columns = new_headers[:len(data.columns)]
     return data, ""
 
+def open_calendar():
+    def select_date():
+        selected_date = cal.selection_get()
+        date_entry.delete(0, tk.END)
+        date_entry.insert(0, selected_date.strftime("%Y%m%d"))
+        top.destroy()
+    top = tk.Toplevel(root)
+    cal = Calendar(top, date_pattern="yyyyMMdd")
+    cal.pack(padx=10, pady=10)
+    select_btn = ttk.Button(top, text="Select", command=select_date)
+    select_btn.pack(pady=5)
+
 def run_analysis():
-    date_str = date_entry.get_date().strftime("%Y%m%d")
+    date_str = date_entry.get()
     url = sharepoint_url_template.format(date_str)
     try:
         r = requests.get(url)
@@ -68,12 +81,15 @@ def run_analysis():
 root = tk.Tk()
 root.title("Excel Analysis")
 sharepoint_url_template = "https://yoursharepointsite.com/path/to/file/{}_CGML_CGME_Backtesting_Capital.xlsx"
-date_label = ttk.Label(root, text="Select Date:")
+date_label = ttk.Label(root, text="Select Date (YYYYMMDD):")
 date_label.grid(row=0, column=0, padx=5, pady=5)
-date_entry = DateEntry(root, width=12, background="darkblue", foreground="white", borderwidth=2, date_pattern="yyyyMMdd")
+date_entry = ttk.Entry(root, width=12)
 date_entry.grid(row=0, column=1, padx=5, pady=5)
+cal_button = ttk.Button(root, text="📅", command=open_calendar)
+cal_button.grid(row=0, column=2, padx=5, pady=5)
 run_button = ttk.Button(root, text="Run", command=run_analysis)
-run_button.grid(row=0, column=2, padx=5, pady=5)
-output_text = tk.Text(root, height=10, width=50)
-output_text.grid(row=1, column=0, columnspan=3, padx=5, pady=5)
+run_button.grid(row=0, column=3, padx=5, pady=5)
+output_text = tk.Text(root, height=10, width=60)
+output_text.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
 root.mainloop()
+```
