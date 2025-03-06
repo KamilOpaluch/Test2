@@ -21,18 +21,16 @@ def process_sheet(df):
     if header_index is None:
         return None, "Header not found"
     headers = df.iloc[header_index].tolist()
-    new_headers = []
-    seen = {}
-    for idx, h in enumerate(headers):
-        h_str = str(h).strip()
-        if h_str in seen:
-            new_headers.append(f"{h_str} ({col_letter(idx+1)})")
-        else:
-            seen[h_str] = 1
-            new_headers.append(h_str)
+    new_headers = [f"{str(h).strip()} ({col_letter(idx+1)})" for idx, h in enumerate(headers)]
     data = df.iloc[header_index+1:].dropna(how="all")
     data.columns = new_headers[:len(data.columns)]
     return data, ""
+
+def find_column(df, prefix):
+    for col in df.columns:
+        if col.startswith(prefix):
+            return col
+    return None
 
 def open_calendar():
     def select_date():
@@ -58,9 +56,16 @@ def run_analysis():
             if table_df is None:
                 results[sheet] = f"Sheet {sheet}: {err}"
                 continue
+            col_change_e = find_column(table_df, "Change,% E")
+            col_change_f = find_column(table_df, "Change F")
+            col_change_l = find_column(table_df, "Change,% L")
+            col_change_m = find_column(table_df, "Change M")
+            if None in (col_change_e, col_change_f, col_change_l, col_change_m):
+                results[sheet] = f"Sheet {sheet}: One or more required columns not found."
+                continue
             initial_count = table_df.shape[0]
-            cond1 = (table_df["Change,% E"] >= 10) & (table_df["Change F"] >= 500000)
-            cond2 = (table_df["Change,% L"] >= 10) & (table_df["Change M"] >= 500000)
+            cond1 = (table_df[col_change_e] >= 10) & (table_df[col_change_f] >= 500000)
+            cond2 = (table_df[col_change_l] >= 10) & (table_df[col_change_m] >= 500000)
             df_filtered = table_df[~(cond1 | cond2)]
             filtered_count = df_filtered.shape[0]
             results[sheet] = f"Sheet {sheet}: Rows before filtering: {initial_count}, after filtering: {filtered_count}"
@@ -73,7 +78,7 @@ def run_analysis():
 
 root = tk.Tk()
 root.title("Excel Analysis")
-folder_path = "C:/Reports"  # Update this path to the folder containing your files
+folder_path = "C:/Reports"
 date_label = ttk.Label(root, text="Select Date (YYYYMMDD):")
 date_label.grid(row=0, column=0, padx=5, pady=5)
 date_entry = ttk.Entry(root, width=12)
