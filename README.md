@@ -3,8 +3,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkcalendar import Calendar
 import pandas as pd
-import requests
-from io import BytesIO
+import os
 
 def col_letter(n):
     result = ""
@@ -49,18 +48,12 @@ def open_calendar():
 
 def run_analysis():
     date_str = date_entry.get()
-    url = sharepoint_url_template.format(date_str)
+    file_path = os.path.join(folder_path, f"{date_str}_CGML_CGME_Backtesting_Capital.xlsx")
     try:
-        r = requests.get(url)
-        if r.status_code != 200:
-            output_text.delete("1.0", tk.END)
-            output_text.insert(tk.END, f"Failed to download file. Status code: {r.status_code}")
-            return
-        file_bytes = BytesIO(r.content)
         sheets = ["CGME_10D_VaR_SVaR_Details_ECB", "CGME_10D_VaR_SVaR_Details_PRA"]
         results = {}
         for sheet in sheets:
-            df_raw = pd.read_excel(file_bytes, sheet_name=sheet, header=None)
+            df_raw = pd.read_excel(file_path, sheet_name=sheet, header=None)
             table_df, err = process_sheet(df_raw)
             if table_df is None:
                 results[sheet] = f"Sheet {sheet}: {err}"
@@ -80,7 +73,7 @@ def run_analysis():
 
 root = tk.Tk()
 root.title("Excel Analysis")
-sharepoint_url_template = "https://yoursharepointsite.com/path/to/file/{}_CGML_CGME_Backtesting_Capital.xlsx"
+folder_path = "C:/Reports"  # Update this path to the folder containing your files
 date_label = ttk.Label(root, text="Select Date (YYYYMMDD):")
 date_label.grid(row=0, column=0, padx=5, pady=5)
 date_entry = ttk.Entry(root, width=12)
