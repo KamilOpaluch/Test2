@@ -1,4 +1,3 @@
-```python
 import tkinter as tk
 from tkinter import ttk
 from tkcalendar import Calendar
@@ -13,13 +12,13 @@ def col_letter(n):
     return result
 
 def process_sheet(df):
-    header_index = None
+    indices = []
     for i in range(df.shape[0]):
         if str(df.iat[i, 0]).strip() == "LEVEL_4" and str(df.iat[i, 1]).strip() == "LEVEL_9":
-            header_index = i
-            break
-    if header_index is None:
+            indices.append(i)
+    if not indices:
         return None, "Header not found"
+    header_index = indices[1] if len(indices) > 1 else indices[0]
     headers = df.iloc[header_index].tolist()
     new_headers = [f"{str(h).strip()} ({col_letter(idx+1)})" for idx, h in enumerate(headers)]
     data = df.iloc[header_index+1:].dropna(how="all")
@@ -90,4 +89,3 @@ run_button.grid(row=0, column=3, padx=5, pady=5)
 output_text = tk.Text(root, height=10, width=60)
 output_text.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
 root.mainloop()
-```
