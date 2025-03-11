@@ -1,3 +1,4 @@
+```python
 import tkinter as tk
 from tkinter import ttk
 from tkcalendar import Calendar
@@ -25,9 +26,15 @@ def process_sheet(df):
     data.columns = new_headers[:len(data.columns)]
     return data, ""
 
-def find_column(df, prefix):
+def find_column(df, target):
     for col in df.columns:
-        if col.startswith(prefix):
+        if col == target:
+            return col
+    return None
+
+def find_column_by_suffix(df, suffix):
+    for col in df.columns:
+        if col.endswith(suffix):
             return col
     return None
 
@@ -48,29 +55,43 @@ def run_analysis():
     file_path = os.path.join(folder_path, f"{date_str}_CGML_CGME_Backtesting_Capital.xlsx")
     try:
         sheets = ["CGME_10D_VaR_SVaR_Details_ECB", "CGME_10D_VaR_SVaR_Details_PRA"]
-        results = {}
+        final_comments = ""
         for sheet in sheets:
             df_raw = pd.read_excel(file_path, sheet_name=sheet, header=None)
             table_df, err = process_sheet(df_raw)
             if table_df is None:
-                results[sheet] = f"Sheet {sheet}: {err}"
+                final_comments += f"Sheet {sheet}: {err}\n"
                 continue
-            col_change_e = find_column(table_df, "Change,% E")
-            col_change_f = find_column(table_df, "Change F")
-            col_change_l = find_column(table_df, "Change,% L")
-            col_change_m = find_column(table_df, "Change M")
-            if None in (col_change_e, col_change_f, col_change_l, col_change_m):
-                results[sheet] = f"Sheet {sheet}: One or more required columns not found."
+            name_col = find_column_by_suffix(table_df, "(B)")
+            target1_col = find_column_by_suffix(table_df, "(C)")
+            target2_col = find_column_by_suffix(table_df, "(J)")
+            change_e_col = find_column(table_df, "Change, % (E)")
+            change_f_col = find_column(table_df, "Change F (F)")
+            change_l_col = find_column(table_df, "Change, % (L)")
+            change_m_col = find_column(table_df, "Change M (M)")
+            if None in (name_col, target1_col, target2_col, change_e_col, change_f_col, change_l_col, change_m_col):
+                final_comments += f"Sheet {sheet}: One or more required columns not found.\n"
                 continue
-            initial_count = table_df.shape[0]
-            cond1 = (table_df[col_change_e] >= 10) & (table_df[col_change_f] >= 500000)
-            cond2 = (table_df[col_change_l] >= 10) & (table_df[col_change_m] >= 500000)
-            df_filtered = table_df[~(cond1 | cond2)]
-            filtered_count = df_filtered.shape[0]
-            results[sheet] = f"Sheet {sheet}: Rows before filtering: {initial_count}, after filtering: {filtered_count}"
+            cond1 = (table_df[change_e_col] >= 10) & (table_df[change_f_col] >= 500000)
+            cond2 = (table_df[change_l_col] >= 10) & (table_df[change_m_col] >= 500000)
+            df_filtered = table_df[cond1 | cond2]
+            sheet_comments = f"Sheet {sheet} comments:\n"
+            for idx, row in df_filtered.iterrows():
+                if (row[change_e_col] >= 10) and (row[change_f_col] >= 500000):
+                    direction = "increased" if row[change_f_col] >= 0 else "decreased"
+                    change_val = abs(row[change_f_col]) / 1e6
+                    target_val = abs(row[target1_col]) / 1e6
+                    sentence = f"{row[name_col]} VaR {direction} by ${change_val:.2f}mm to ${target_val:.2f}mm"
+                    sheet_comments += sentence + "\n"
+                elif (row[change_l_col] >= 10) and (row[change_m_col] >= 500000):
+                    direction = "increased" if row[change_m_col] >= 0 else "decreased"
+                    change_val = abs(row[change_m_col]) / 1e6
+                    target_val = abs(row[target2_col]) / 1e6
+                    sentence = f"{row[name_col]} SVaR {direction} by ${change_val:.2f}mm to ${target_val:.2f}mm"
+                    sheet_comments += sentence + "\n"
+            final_comments += sheet_comments + "\n"
         output_text.delete("1.0", tk.END)
-        for res in results.values():
-            output_text.insert(tk.END, res + "\n")
+        output_text.insert(tk.END, final_comments)
     except Exception as e:
         output_text.delete("1.0", tk.END)
         output_text.insert(tk.END, f"Error: {str(e)}")
@@ -86,6 +107,7 @@ cal_button = ttk.Button(root, text="📅", command=open_calendar)
 cal_button.grid(row=0, column=2, padx=5, pady=5)
 run_button = ttk.Button(root, text="Run", command=run_analysis)
 run_button.grid(row=0, column=3, padx=5, pady=5)
-output_text = tk.Text(root, height=10, width=60)
+output_text = tk.Text(root, height=15, width=80)
 output_text.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
 root.mainloop()
+```
