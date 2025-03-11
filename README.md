@@ -72,18 +72,18 @@ def run_analysis():
             if None in (name_col, target1_col, target2_col, change_e_col, change_f_col, change_l_col, change_m_col):
                 final_comments += f"Sheet {sheet}: One or more required columns not found.\n"
                 continue
-            cond1 = (table_df[change_e_col] >= 10) & (table_df[change_f_col] >= 500000)
-            cond2 = (table_df[change_l_col] >= 10) & (table_df[change_m_col] >= 500000)
+            cond1 = (table_df[change_e_col] >= 10) & ((table_df[change_f_col] >= 500000) | (table_df[change_f_col] <= -500000))
+            cond2 = (table_df[change_l_col] >= 10) & ((table_df[change_m_col] >= 500000) | (table_df[change_m_col] <= -500000))
             df_filtered = table_df[cond1 | cond2]
             sheet_comments = f"Sheet {sheet} comments:\n"
             for idx, row in df_filtered.iterrows():
-                if (row[change_e_col] >= 10) and (row[change_f_col] >= 500000):
+                if (row[change_e_col] >= 10) and ((row[change_f_col] >= 500000) or (row[change_f_col] <= -500000)):
                     direction = "increased" if row[change_f_col] >= 0 else "decreased"
                     change_val = abs(row[change_f_col]) / 1e6
                     target_val = abs(row[target1_col]) / 1e6
                     sentence = f"{row[name_col]} VaR {direction} by ${change_val:.2f}mm to ${target_val:.2f}mm"
                     sheet_comments += sentence + "\n"
-                elif (row[change_l_col] >= 10) and (row[change_m_col] >= 500000):
+                if (row[change_l_col] >= 10) and ((row[change_m_col] >= 500000) or (row[change_m_col] <= -500000)):
                     direction = "increased" if row[change_m_col] >= 0 else "decreased"
                     change_val = abs(row[change_m_col]) / 1e6
                     target_val = abs(row[target2_col]) / 1e6
