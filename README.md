@@ -1,3 +1,4 @@
+```python
 import tkinter as tk
 from tkinter import ttk
 from tkcalendar import Calendar
@@ -66,28 +67,36 @@ def run_analysis():
             if table_df is None:
                 output_text.insert(tk.END, f"Sheet {sheet}: {err}\n")
                 continue
+
             # Basic columns for both comments
             name_col = find_column_by_suffix(table_df, "(B)")
-            target1_col = find_column_by_suffix(table_df, "(C)")  # VaR target
-            target2_col = find_column_by_suffix(table_df, "(J)")  # SVaR target
-            change_e_col = find_column(table_df, "Change, % (E)")  # VaR percentage change
-            change_f_col = find_column(table_df, "Change F (F)")    # VaR change amount
-            change_l_col = find_column(table_df, "Change, % (L)")   # SVaR percentage change
-            change_m_col = find_column(table_df, "Change M (M)")    # SVaR change amount
-            # Extended (CVaR / CSVaR) columns
-            cv_change_col = find_column(table_df, "Change (I)")     # CVaR change amount
-            cv_target_col = find_column_by_suffix(table_df, "(G)")  # CVaR target value
-            cs_change_col = find_column(table_df, "Change (P)")     # CSVaR change amount
-            cs_target_col = find_column_by_suffix(table_df, "(O)")  # CSVaR target value
+            target1_col = find_column_by_suffix(table_df, "(C)")   # VaR target
+            target2_col = find_column_by_suffix(table_df, "(J)")   # SVaR target
+            change_e_col = find_column(table_df, "Change, % (E)")   # VaR % change
+            change_f_col = find_column(table_df, "Change F (F)")     # VaR change amount
+            change_l_col = find_column(table_df, "Change, % (L)")   # SVaR % change
+            change_m_col = find_column(table_df, "Change M (M)")     # SVaR change amount
+
+            # Extended columns for CVaR and CSVaR
+            cv_change_col = find_column(table_df, "Change (I)")      # CVaR change amount
+            cv_target_col = find_column_by_suffix(table_df, "(G)")   # CVaR target value
+            cs_change_col = find_column(table_df, "Change (P)")      # CSVaR change amount
+            cs_target_col = find_column_by_suffix(table_df, "(O)")   # CSVaR target value
+
             if None in (name_col, target1_col, target2_col, change_e_col, change_f_col, 
                         change_l_col, change_m_col, cv_change_col, cv_target_col, cs_change_col, cs_target_col):
                 output_text.insert(tk.END, f"Sheet {sheet}: One or more required columns not found.\n")
                 continue
-            # Conditions with threshold 0.1 (instead of 10) for percentage and either positive or negative change amount threshold
+
+            # Conditions using threshold 0.1 for % and >=500000 or <=-500000 for change amounts
             cond1 = (table_df[change_e_col] >= 0.1) & ((table_df[change_f_col] >= 500000) | (table_df[change_f_col] <= -500000))
             cond2 = (table_df[change_l_col] >= 0.1) & ((table_df[change_m_col] >= 500000) | (table_df[change_m_col] <= -500000))
             df_filtered = table_df[cond1 | cond2]
-            output_text.insert(tk.END, f"Sheet {sheet} comments:\n")
+
+            # Separate lists for VaR and SVaR comments
+            var_comments = []
+            svar_comments = []
+
             for idx, row in df_filtered.iterrows():
                 # VaR comment with extended CVaR details
                 if (row[change_e_col] >= 0.1) and ((row[change_f_col] >= 500000) or (row[change_f_col] <= -500000)):
@@ -97,18 +106,20 @@ def run_analysis():
                     ext_direction = "increased" if row[cv_change_col] >= 0 else "decreased"
                     ext_change_val = abs(row[cv_change_col]) / 1e6
                     ext_target_val = abs(row[cv_target_col]) / 1e6
-                    parts = [
+                    var_parts = [
                         (f"{row[name_col]} VaR {direction} by ", None),
                         (f"${change_val:.2f}mm", "bold"),
                         (" to ", None),
                         (f"${target_val:.2f}mm", "bold"),
-                        (f" ({row[change_e_col]*100:.2f}%) while CVaR {ext_direction} by ", None),
+                        (f" ({row[change_e_col]*100:.2f}%) while CVaR ", None),
+                        (f"{ext_direction}", None),
+                        (" by ", None),
                         (f"${ext_change_val:.2f}mm", "bold"),
                         (" to ", None),
                         (f"${ext_target_val:.2f}mm", "bold"),
                         (")", None)
                     ]
-                    insert_sentence(parts)
+                    var_comments.append(var_parts)
                 # SVaR comment with extended CSVaR details
                 if (row[change_l_col] >= 0.1) and ((row[change_m_col] >= 500000) or (row[change_m_col] <= -500000)):
                     direction = "increased" if row[change_m_col] >= 0 else "decreased"
@@ -117,17 +128,30 @@ def run_analysis():
                     ext_direction = "increased" if row[cs_change_col] >= 0 else "decreased"
                     ext_change_val = abs(row[cs_change_col]) / 1e6
                     ext_target_val = abs(row[cs_target_col]) / 1e6
-                    parts = [
+                    svar_parts = [
                         (f"{row[name_col]} SVaR {direction} by ", None),
                         (f"${change_val:.2f}mm", "bold"),
                         (" to ", None),
                         (f"${target_val:.2f}mm", "bold"),
-                        (f" ({row[change_l_col]*100:.2f}%) while CSVaR {ext_direction} by ", None),
+                        (f" ({row[change_l_col]*100:.2f}%) while CSVaR ", None),
+                        (f"{ext_direction}", None),
+                        (" by ", None),
                         (f"${ext_change_val:.2f}mm", "bold"),
                         (" to ", None),
                         (f"${ext_target_val:.2f}mm", "bold"),
                         (")", None)
                     ]
+                    svar_comments.append(svar_parts)
+
+            # Output for this sheet
+            output_text.insert(tk.END, f"Sheet {sheet} comments:\n")
+            if var_comments:
+                output_text.insert(tk.END, "10d VaR change:\n", "bold")
+                for parts in var_comments:
+                    insert_sentence(parts)
+            if svar_comments:
+                output_text.insert(tk.END, "10d SVaR change:\n", "bold")
+                for parts in svar_comments:
                     insert_sentence(parts)
             output_text.insert(tk.END, "\n")
     except Exception as e:
@@ -149,3 +173,4 @@ output_text = tk.Text(root, height=20, width=160)
 output_text.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
 output_text.tag_config("bold", font=("Helvetica", 10, "bold"))
 root.mainloop()
+```
