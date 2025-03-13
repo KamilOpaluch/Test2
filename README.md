@@ -1,4 +1,3 @@
-```python
 import tkinter as tk
 from tkinter import ttk
 from tkcalendar import Calendar
@@ -51,8 +50,8 @@ def open_calendar():
     select_btn.pack(pady=5)
 
 def format_money(val):
-    # Formats the value in millions with a dollar sign;
-    # if negative, puts '-' between the dollar sign and the number.
+    # Returns a string in millions with a dollar sign.
+    # If the value is negative, a '-' is inserted between '$' and the number.
     return f"${'-' if val < 0 else ''}{abs(val)/1e6:.2f}mm"
 
 def insert_sentence(parts):
@@ -93,7 +92,7 @@ def run_analysis():
                 output_text.insert(tk.END, f"Sheet {sheet}: One or more required columns not found.\n")
                 continue
 
-            # Conditions using threshold 0.1 (instead of 10) for percentage and >=500000 or <=-500000 for change amounts
+            # Conditions using threshold 0.1 for % columns and >=500000 or <=-500000 for change amounts
             cond1 = (table_df[change_e_col] >= 0.1) & ((table_df[change_f_col] >= 500000) | (table_df[change_f_col] <= -500000))
             cond2 = (table_df[change_l_col] >= 0.1) & ((table_df[change_m_col] >= 500000) | (table_df[change_m_col] <= -500000))
             df_filtered = table_df[cond1 | cond2]
@@ -107,18 +106,16 @@ def run_analysis():
                 if (row[change_e_col] >= 0.1) and ((row[change_f_col] >= 500000) or (row[change_f_col] <= -500000)):
                     direction = "increased" if row[change_f_col] >= 0 else "decreased"
                     change_val_str = format_money(row[change_f_col])
-                    target_val_str = f"${abs(row[target1_col])/1e6:.2f}mm"
+                    target_val_str = format_money(row[target1_col]).replace("mm", "mm")  # Ensuring same format
                     ext_direction = "increased" if row[cv_change_col] >= 0 else "decreased"
                     ext_change_val_str = format_money(row[cv_change_col])
-                    ext_target_val_str = f"${abs(row[cv_target_col])/1e6:.2f}mm"
+                    ext_target_val_str = format_money(row[cv_target_col]).replace("mm", "mm")
                     var_parts = [
                         (f"{row[name_col]} VaR {direction} by ", None),
                         (f"{change_val_str}", "bold"),
                         (" to ", None),
                         (f"{target_val_str}", "bold"),
-                        (f" ({(row[change_e_col]*100):.2f}%) while CVaR ", None),
-                        (f"{ext_direction}", None),
-                        (" by ", None),
+                        (f" ({row[change_e_col]:.2f}%) while CVaR {ext_direction} by ", None),
                         (f"{ext_change_val_str}", "bold"),
                         (" to ", None),
                         (f"{ext_target_val_str}", "bold"),
@@ -129,18 +126,16 @@ def run_analysis():
                 if (row[change_l_col] >= 0.1) and ((row[change_m_col] >= 500000) or (row[change_m_col] <= -500000)):
                     direction = "increased" if row[change_m_col] >= 0 else "decreased"
                     change_val_str = format_money(row[change_m_col])
-                    target_val_str = f"${abs(row[target2_col])/1e6:.2f}mm"
+                    target_val_str = format_money(row[target2_col]).replace("mm", "mm")
                     ext_direction = "increased" if row[cs_change_col] >= 0 else "decreased"
                     ext_change_val_str = format_money(row[cs_change_col])
-                    ext_target_val_str = f"${abs(row[cs_target_col])/1e6:.2f}mm"
+                    ext_target_val_str = format_money(row[cs_target_col]).replace("mm", "mm")
                     svar_parts = [
                         (f"{row[name_col]} SVaR {direction} by ", None),
                         (f"{change_val_str}", "bold"),
                         (" to ", None),
                         (f"{target_val_str}", "bold"),
-                        (f" ({(row[change_l_col]*100):.2f}%) while CSVaR ", None),
-                        (f"{ext_direction}", None),
-                        (" by ", None),
+                        (f" ({row[change_l_col]:.2f}%) while CSVaR {ext_direction} by ", None),
                         (f"{ext_change_val_str}", "bold"),
                         (" to ", None),
                         (f"{ext_target_val_str}", "bold"),
@@ -178,4 +173,3 @@ output_text = tk.Text(root, height=20, width=160)
 output_text.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
 output_text.tag_config("bold", font=("Helvetica", 10, "bold"))
 root.mainloop()
-```
