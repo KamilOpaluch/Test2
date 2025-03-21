@@ -5,17 +5,21 @@ def expand_distribution_list(address_entry):
     try:
         if address_entry.DisplayType == 1:  # Individual
             result.append(address_entry.Name)
-        elif address_entry.DisplayType == 0:  # User (might be individual)
-            exchUser = address_entry.GetExchangeUser()
-            if exchUser:
-                result.append(exchUser.Name)
-        elif address_entry.DisplayType == 5:  # Exchange Distribution List
-            members = address_entry.GetExchangeDistributionList().GetExchangeDistributionListMembers()
-            if members:
-                for member in members:
-                    result.extend(expand_distribution_list(member))
+        elif address_entry.DisplayType == 0:  # User
+            exch_user = address_entry.GetExchangeUser()
+            if exch_user:
+                result.append(exch_user.Name)
+        elif address_entry.DisplayType == 5:  # Distribution List
+            dl = address_entry.GetExchangeDistributionList()
+            if dl:
+                members = dl.GetExchangeDistributionListMembers()
+                if members:
+                    for member in members:
+                        result.extend(expand_distribution_list(member))
+                else:
+                    result.append(f"{address_entry.Name} (Empty group)")
             else:
-                result.append(f"{address_entry.Name} (Empty group)")
+                result.append(f"{address_entry.Name} (Not a DL)")
         else:
             result.append(address_entry.Name)
     except Exception as e:
@@ -25,23 +29,27 @@ def expand_distribution_list(address_entry):
 def resolve_and_expand(email_list):
     outlook = win32com.client.Dispatch("Outlook.Application")
     namespace = outlook.GetNamespace("MAPI")
-    
+
     resolved_names = []
 
-    for email in email_list:
-        address_entry = namespace.CreateRecipient(email).AddressEntry
-        if address_entry is not None and address_entry.Resolved:
-            resolved_names.extend(expand_distribution_list(address_entry))
-        else:
-            resolved_names.append(f"{email} (Unresolved)")
-    
+    for item in email_list:
+        try:
+            recipient = namespace.CreateRecipient(item)
+            if recipient.Resolve():
+                address_entry = recipient.AddressEntry
+                resolved_names.extend(expand_distribution_list(address_entry))
+            else:
+                resolved_names.append(f"{item} (Unresolved)")
+        except Exception as e:
+            resolved_names.append(f"{item} (Exception: {e})")
+
     return resolved_names
 
-# Example list of email addresses and/or distribution list names
+# Example input
 input_emails = [
-    "john.doe@example.com",
-    "Finance Team",  # example distribution group name
-    "hr-department@example.com"
+    "john.doe@example.com",         # Individual
+    "Finance Team",                 # Exchange DL name
+    "hr-department@example.com"     # Email-based group
 ]
 
 people = resolve_and_expand(input_emails)
