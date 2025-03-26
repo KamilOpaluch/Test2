@@ -4,13 +4,11 @@ import pythoncom
 import os
 from datetime import datetime, timezone
 from tkinter import *
-from tkinter import filedialog, messagebox
-from tkinter.ttk import Combobox, Style
+from tkinter import filedialog, messagebox, ttk
 from openpyxl import Workbook
 from tkcalendar import DateEntry
-from tkinter.scrolledtext import ScrolledText
 
-MAX_SCAN_LIMIT = 1000  # Absolute maximum number of emails to scan
+MAX_SCAN_LIMIT = 1000
 
 def get_outlook_inbox(mailbox=None):
     outlook = win32com.client.Dispatch("Outlook.Application")
@@ -30,6 +28,13 @@ def match_keywords(text, keywords, logic):
         return True
     text = text.lower()
     return all(k.lower() in text for k in keywords) if logic == "AND" else any(k.lower() in text for k in keywords)
+
+def open_email_by_entryid(entryid):
+    pythoncom.CoInitialize()
+    outlook = win32com.client.Dispatch("Outlook.Application")
+    namespace = outlook.GetNamespace("MAPI")
+    mail_item = namespace.GetItemFromID(entryid)
+    mail_item.Display()
 
 def search_emails_thread(filters, on_result, on_done, on_debug):
     pythoncom.CoInitialize()
@@ -63,31 +68,28 @@ def search_emails_thread(filters, on_result, on_done, on_debug):
                 received = msg.ReceivedTime
 
                 if not match_keywords(subject, filters['subject_include'], filters['subject_logic']):
-                    on_debug(f"Skipped: subject missing required keywords.")
+                    on_debug(f"Skipped: subject does not contain any of: {filters['subject_include']}")
                     continue
-                if match_keywords(subject, filters['subject_exclude'], filters['subject_exclude_logic']):
-                    on_debug(f"Skipped: subject contains excluded keywords.")
-                    continue
+                if any(k.strip() for k in filters['subject_exclude']):
+                    if match_keywords(subject, filters['subject_exclude'], filters['subject_exclude_logic']):
+                        on_debug(f"Skipped: subject contains excluded keywords: {filters['subject_exclude']}")
+                        continue
                 if not match_keywords(body, filters['body_keywords'], filters['body_logic']):
-                    on_debug(f"Skipped: body missing required keywords.")
+                    on_debug("Skipped: body does not contain required keywords.")
                     continue
                 if not match_keywords(sender, filters['sender_keywords'], filters['sender_logic']):
-                    on_debug(f"Skipped: sender mismatch.")
+                    on_debug("Skipped: sender does not match provided filters.")
                     continue
-                if [k.strip() for k in filters['attachment_keywords'] if k.strip()]:
+                if any(k.strip() for k in filters['attachment_keywords']):
                     all_attachments = ' '.join(attachments).lower()
                     if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
-                        on_debug(f"Skipped: attachment name mismatch.")
+                        on_debug("Skipped: attachment filename does not match keywords.")
                         continue
 
                 result = {
                     "subject": subject,
                     "received": received.strftime("%Y-%m-%d %H:%M"),
-                    "body": body,
                     "body_preview": body[:50].replace("\n", " "),
-                    "recipients": ", ".join(recipients),
-                    "cc": cc,
-                    "attachments": ", ".join(attachments),
                     "entryid": msg.EntryID
                 }
 
@@ -96,7 +98,7 @@ def search_emails_thread(filters, on_result, on_done, on_debug):
 
                 count += 1
                 if filters['limit'] and count >= filters['limit']:
-                    on_debug(f"Limit reached: {filters['limit']} matches found.")
+                    on_debug(f"Reached match limit: {filters['limit']}")
                     break
 
             except Exception as e:
@@ -106,8 +108,6 @@ def search_emails_thread(filters, on_result, on_done, on_debug):
         on_done(results)
     except Exception as e:
         on_done([], error=str(e))
-
-# === GUI ===
 
 def run_search():
     try:
@@ -128,7 +128,8 @@ def run_search():
             'limit': int(limit.get()) if limit.get().isdigit() else None
         }
 
-        output_box.delete("1.0", END)
+        for row in tree.get_children():
+            tree.delete(row)
         debug_box.delete("1.0", END)
         search_button.config(state=DISABLED)
         status_label.config(text="Searching...")
@@ -148,8 +149,7 @@ def run_search():
 
 def on_result_found(result):
     found_emails.append(result)
-    output_box.insert(END, f"{len(found_emails)}. {result['received']} | {result['subject']} | {result['body_preview']}\n")
-    output_box.see(END)
+    tree.insert("", END, values=(result['received'], result['subject'], result['body_preview'], "Open"), tags=(result['entryid'],))
 
 def on_search_done(results, error=None):
     search_button.config(state=NORMAL)
@@ -157,13 +157,20 @@ def on_search_done(results, error=None):
         messagebox.showerror("Search Error", error)
         status_label.config(text="Search failed.")
     else:
-        if not results:
-            output_box.insert(END, "No matching emails found.\n")
         status_label.config(text=f"Search complete. {len(results)} emails found.")
 
 def on_debug_message(msg):
     debug_box.insert(END, f"{msg}\n")
     debug_box.see(END)
+
+def on_tree_click(event):
+    item = tree.identify_row(event.y)
+    if not item:
+        return
+    col = tree.identify_column(event.x)
+    if col == '#4':  # 'Open' column
+        entryid = tree.item(item, 'tags')[0]
+        open_email_by_entryid(entryid)
 
 def save_results():
     if not found_emails:
@@ -176,87 +183,80 @@ def save_results():
     wb = Workbook()
     ws = wb.active
     ws.title = "Emails"
-    ws.append(["Subject", "Received", "Body", "Recipients", "CC", "Attachments"])
+    ws.append(["Subject", "Received", "Body Preview"])
     for r in found_emails:
-        ws.append([r["subject"], r["received"], r["body"], r["recipients"], r["cc"], r["attachments"]])
+        ws.append([r["subject"], r["received"], r["body_preview"]])
     wb.save(os.path.join(folder, filename))
     messagebox.showinfo("Export Complete", "Excel file saved successfully.")
 
-# === Build GUI ===
-
+# GUI
 root = Tk()
 root.title("Outlook Email Search Tool")
 root.configure(bg="#2e2e2e")
 
-style = Style()
+style = ttk.Style()
 style.theme_use("clam")
-style.configure(".", background="#2e2e2e", foreground="white", fieldbackground="#3e3e3e")
-style.map("TCombobox", fieldbackground=[("readonly", "#3e3e3e")], foreground=[("readonly", "white")])
+style.configure("TLabel", background="#2e2e2e", foreground="white")
+style.configure("TButton", background="#3e3e3e", foreground="white", padding=5)
+style.configure("Treeview", background="#1e1e1e", foreground="white", fieldbackground="#1e1e1e")
+style.configure("Treeview.Heading", background="#333", foreground="white")
+style.map("TButton", background=[("active", "#444")])
 
-def label(row, text):
-    Label(root, text=text, bg="#2e2e2e", fg="white").grid(row=row, column=0, sticky="w", pady=2)
+frm = Frame(root, bg="#2e2e2e")
+frm.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
-def entry(row, width=50):
-    e = Entry(root, width=width, bg="#3e3e3e", fg="white", insertbackground="white")
-    e.grid(row=row, column=1, sticky="w", pady=2)
-    return e
+def add_label_entry_combo(r, label_txt):
+    Label(frm, text=label_txt).grid(row=r, column=0, sticky="w")
+    e = Entry(frm, width=50, bg="#3e3e3e", fg="white", insertbackground="white")
+    e.grid(row=r, column=1, padx=5, pady=2)
+    cb = Combobox(frm, values=["AND", "OR"], width=5, state="readonly")
+    cb.set("OR")
+    cb.grid(row=r, column=2, padx=5)
+    return e, cb
 
-def dropdown(row, values, default):
-    cb = Combobox(root, values=values, width=5, state="readonly")
-    cb.set(default)
-    cb.grid(row=row, column=2, sticky="w", padx=5)
-    return cb
+Label(frm, text="Shared Mailbox (optional):").grid(row=0, column=0, sticky="w")
+mailbox_entry = Entry(frm, width=50, bg="#3e3e3e", fg="white", insertbackground="white")
+mailbox_entry.grid(row=0, column=1, columnspan=2, pady=2, sticky="w")
 
-label(0, "Shared Mailbox (optional):")
-mailbox_entry = entry(0)
+subject_include, subject_logic = add_label_entry_combo(1, "Subject contains:")
+subject_exclude, subject_exclude_logic = add_label_entry_combo(2, "Subject NOT contains:")
+body_keywords, body_logic = add_label_entry_combo(3, "Body contains:")
+attachment_keywords, attachment_logic = add_label_entry_combo(4, "Attachment keywords:")
+sender_keywords, sender_logic = add_label_entry_combo(5, "Sender keywords:")
 
-label(1, "Subject contains:")
-subject_include = entry(1)
-subject_logic = dropdown(1, ["AND", "OR"], "AND")
-
-label(2, "Subject NOT contains:")
-subject_exclude = entry(2)
-subject_exclude_logic = dropdown(2, ["AND", "OR"], "OR")
-
-label(3, "Body contains:")
-body_keywords = entry(3)
-body_logic = dropdown(3, ["AND", "OR"], "OR")
-
-label(4, "Attachment keywords:")
-attachment_keywords = entry(4)
-attachment_logic = dropdown(4, ["AND", "OR"], "OR")
-
-label(5, "Sender keywords:")
-sender_keywords = entry(5)
-sender_logic = dropdown(5, ["AND", "OR"], "OR")
-
-label(6, "Start Date:")
-start_date = DateEntry(root, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
+Label(frm, text="Start Date:").grid(row=6, column=0, sticky="w")
+start_date = DateEntry(frm, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
 start_date.grid(row=6, column=1, sticky="w", pady=2)
 
-label(7, "End Date:")
-end_date = DateEntry(root, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
+Label(frm, text="End Date:").grid(row=7, column=0, sticky="w")
+end_date = DateEntry(frm, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
 end_date.grid(row=7, column=1, sticky="w", pady=2)
 
-label(8, "Max results (optional):")
-limit = entry(8, width=10)
+Label(frm, text="Max results:").grid(row=8, column=0, sticky="w")
+limit = Entry(frm, width=10, bg="#3e3e3e", fg="white", insertbackground="white")
+limit.grid(row=8, column=1, sticky="w", pady=2)
 
-search_button = Button(root, text="Run Search", command=run_search, bg="#444", fg="white")
+search_button = Button(frm, text="Run Search", command=run_search)
 search_button.grid(row=9, column=0, pady=10)
 
-Button(root, text="Export to Excel", command=save_results, bg="#444", fg="white").grid(row=9, column=1, pady=10)
+Button(frm, text="Export to Excel", command=save_results).grid(row=9, column=1, pady=10)
 
-status_label = Label(root, text="Ready", bg="#2e2e2e", fg="lightgray")
+status_label = Label(frm, text="Ready", fg="lightgray", bg="#2e2e2e")
 status_label.grid(row=10, column=0, columnspan=2, sticky="w")
 
-label(11, "Results:")
-output_box = ScrolledText(root, width=100, height=12, bg="#1e1e1e", fg="white", insertbackground="white")
-output_box.grid(row=12, column=0, columnspan=3, pady=5)
+columns = ("received", "subject", "preview", "action")
+tree = ttk.Treeview(root, columns=columns, show="headings", height=10)
+tree.heading("received", text="Date")
+tree.heading("subject", text="Subject")
+tree.heading("preview", text="Body Preview")
+tree.heading("action", text="Action")
+tree.column("action", width=70, anchor="center")
+tree.grid(row=11, column=0, sticky="nsew", padx=10, pady=5)
+tree.bind("<ButtonRelease-1>", on_tree_click)
 
-label(13, "Debug Log:")
-debug_box = ScrolledText(root, width=100, height=6, bg="#1e1e1e", fg="gray", insertbackground="white")
-debug_box.grid(row=14, column=0, columnspan=3, pady=5)
+Label(root, text="Debug Log:", bg="#2e2e2e", fg="gray").grid(row=12, column=0, sticky="w", padx=10)
+debug_box = Text(root, width=120, height=6, bg="#1e1e1e", fg="gray", insertbackground="white")
+debug_box.grid(row=13, column=0, padx=10, pady=5)
 
 found_emails = []
 root.mainloop()
-
