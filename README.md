@@ -1,29 +1,45 @@
+# Required: pip install pywin32 openpyxl tkcalendar
+
 import win32com.client
 import os
 from datetime import datetime, timezone
-from tkinter import (
-    Tk, Label, Entry, Text, Button, Scrollbar, filedialog,
-    END, Frame, StringVar, IntVar, Checkbutton
-)
-from tkinter.ttk import Combobox
+from tkinter import *
+from tkinter import filedialog, messagebox
+from tkinter.ttk import Combobox, Style
 from openpyxl import Workbook
+from tkcalendar import DateEntry
 from tkinter.scrolledtext import ScrolledText
 
 
-def get_outlook_inbox(mailbox):
+def get_outlook_inbox(mailbox=None):
     outlook = win32com.client.Dispatch("Outlook.Application")
     namespace = outlook.GetNamespace("MAPI")
-    recipient = namespace.CreateRecipient(mailbox)
-    recipient.Resolve()
-    if recipient.Resolved:
-        inbox = namespace.GetSharedDefaultFolder(recipient, 6)  # 6 = Inbox
-        return inbox
-    else:
-        raise Exception(f"Cannot resolve mailbox: {mailbox}")
+    if mailbox:
+        recipient = namespace.CreateRecipient(mailbox)
+        recipient.Resolve()
+        if recipient.Resolved:
+            return namespace.GetSharedDefaultFolder(recipient, 6)
+        raise Exception(f"Cannot access mailbox: {mailbox}")
+    return namespace.GetDefaultFolder(6)  # Default inbox
+
+
+def open_email(entry_id):
+    outlook = win32com.client.Dispatch("Outlook.Application")
+    namespace = outlook.GetNamespace("MAPI")
+    mail_item = namespace.GetItemFromID(entry_id)
+    mail_item.Display()
+
+
+def match_keywords(text, keywords, logic):
+    text = text.lower()
+    keywords = [k.lower().strip() for k in keywords if k.strip()]
+    if not keywords:
+        return True
+    return all(k in text for k in keywords) if logic == "AND" else any(k in text for k in keywords)
 
 
 def search_emails(filters):
-    inbox = get_outlook_inbox(filters['mailbox'])
+    inbox = get_outlook_inbox(filters.get('mailbox'))
     messages = inbox.Items
     messages.Sort("[ReceivedTime]", True)
 
@@ -35,53 +51,37 @@ def search_emails(filters):
             received = msg.ReceivedTime
             if received.tzinfo is None:
                 received = received.replace(tzinfo=timezone.utc)
-            if received < filters['start_date'] or received > filters['end_date']:
+            if not (filters['start_date'] <= received <= filters['end_date']):
                 continue
 
             subject = msg.Subject or ""
             body = msg.Body or ""
             sender = msg.SenderEmailAddress or ""
             attachments = [att.FileName for att in msg.Attachments]
+            recipients = [msg.Recipients.Item(i + 1).Address for i in range(msg.Recipients.Count)]
+            cc = msg.CC if msg.CC else ""
 
-            if filters['subject_include']:
-                if filters['subject_logic'] == "AND":
-                    if not all(kw.lower() in subject.lower() for kw in filters['subject_include']):
-                        continue
-                else:
-                    if not any(kw.lower() in subject.lower() for kw in filters['subject_include']):
-                        continue
-
-            if filters['subject_exclude']:
-                if any(kw.lower() in subject.lower() for kw in filters['subject_exclude']):
-                    continue
-
-            if filters['body_keywords']:
-                if filters['body_logic'] == "AND":
-                    if not all(kw.lower() in body.lower() for kw in filters['body_keywords']):
-                        continue
-                else:
-                    if not any(kw.lower() in body.lower() for kw in filters['body_keywords']):
-                        continue
-
+            if not match_keywords(subject, filters['subject_include'], filters['subject_logic']):
+                continue
+            if match_keywords(subject, filters['subject_exclude'], filters['subject_exclude_logic']):
+                continue
+            if not match_keywords(body, filters['body_keywords'], filters['body_logic']):
+                continue
+            if not match_keywords(sender, filters['sender_keywords'], filters['sender_logic']):
+                continue
             if filters['attachment_keywords']:
-                if not any(
-                    any(kw.lower() in att.lower() for kw in filters['attachment_keywords'])
-                    for att in attachments
-                ):
-                    continue
-
-            if filters['sender_keywords']:
-                if not any(kw.lower() in sender.lower() for kw in filters['sender_keywords']):
+                all_attachments = ' '.join(attachments).lower()
+                if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
                     continue
 
             results.append({
                 "subject": subject,
                 "received": received.strftime("%Y-%m-%d %H:%M"),
                 "body": body,
-                "body_preview": body[:50],
-                "recipients": [msg.Recipients.Item(i + 1).Address for i in range(msg.Recipients.Count)],
-                "cc": [msg.CC] if msg.CC else [],
-                "attachments": attachments,
+                "body_preview": body[:50].replace("\n", " "),
+                "recipients": ", ".join(recipients),
+                "cc": cc,
+                "attachments": ", ".join(attachments),
                 "entryid": msg.EntryID
             })
 
@@ -90,130 +90,128 @@ def search_emails(filters):
                 break
         except Exception:
             continue
-
     return results
 
 
-def open_email(entryid):
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    session = outlook.GetNamespace("MAPI")
-    mail_item = session.GetItemFromID(entryid)
-    mail_item.Display()
-
-
-def export_to_excel(results, output_path):
+def export_to_excel(results, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Emails"
-    headers = ["Subject", "Received", "Body", "Recipients", "CC", "Attachments"]
-    ws.append(headers)
+    ws.append(["Subject", "Received", "Body", "Recipients", "CC", "Attachments"])
     for r in results:
-        ws.append([
-            r["subject"],
-            r["received"],
-            r["body"],
-            ", ".join(r["recipients"]),
-            ", ".join(r["cc"]),
-            ", ".join(r["attachments"]),
-        ])
-    wb.save(output_path)
+        ws.append([r["subject"], r["received"], r["body"], r["recipients"], r["cc"], r["attachments"]])
+    wb.save(path)
 
 
-def run_search_ui():
-    filters = {
-        'mailbox': mailbox_entry.get(),
-        'subject_include': subject_include.get().split(',') if subject_include.get() else [],
-        'subject_exclude': subject_exclude.get().split(',') if subject_exclude.get() else [],
-        'body_keywords': body_keywords.get().split(',') if body_keywords.get() else [],
-        'attachment_keywords': attachment_keywords.get().split(',') if attachment_keywords.get() else [],
-        'sender_keywords': sender_keywords.get().split(',') if sender_keywords.get() else [],
-        'subject_logic': subject_logic.get(),
-        'body_logic': body_logic.get(),
-        'start_date': datetime.strptime(start_date.get(), "%Y-%m-%d").replace(tzinfo=timezone.utc),
-        'end_date': datetime.strptime(end_date.get(), "%Y-%m-%d").replace(tzinfo=timezone.utc),
-        'limit': int(limit.get()) if limit.get().isdigit() else None
-    }
+def run_search():
+    try:
+        filters = {
+            'mailbox': mailbox_entry.get().strip() or None,
+            'subject_include': subject_include.get().split(','),
+            'subject_exclude': subject_exclude.get().split(','),
+            'body_keywords': body_keywords.get().split(','),
+            'attachment_keywords': attachment_keywords.get().split(','),
+            'sender_keywords': sender_keywords.get().split(','),
+            'subject_logic': subject_logic.get(),
+            'subject_exclude_logic': subject_exclude_logic.get(),
+            'body_logic': body_logic.get(),
+            'sender_logic': sender_logic.get(),
+            'attachment_logic': attachment_logic.get(),
+            'start_date': datetime.combine(start_date.get_date(), datetime.min.time()).replace(tzinfo=timezone.utc),
+            'end_date': datetime.combine(end_date.get_date(), datetime.max.time()).replace(tzinfo=timezone.utc),
+            'limit': int(limit.get()) if limit.get().isdigit() else None
+        }
 
-    result_output.delete("1.0", END)
-    global found_emails
-    found_emails = search_emails(filters)
+        output_box.delete("1.0", END)
+        global found_emails
+        found_emails = search_emails(filters)
 
-    for idx, email in enumerate(found_emails):
-        display_text = f"{idx+1}. {email['received']} | {email['subject']} | {email['body_preview']}..."
-        result_output.insert(END, display_text + "\n")
-        result_output.insert(END, f"[Open Email]\n")
-        result_output.window_create(END, window=Button(root, text="Open", command=lambda eid=email["entryid"]: open_email(eid)))
-        result_output.insert(END, "\n\n")
+        for idx, email in enumerate(found_emails):
+            output_box.insert(END, f"{idx + 1}. {email['received']} | {email['subject']} | {email['body_preview']}\n")
+
+        if not found_emails:
+            output_box.insert(END, "No matching emails found.\n")
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
 
 
-def export_results_ui():
+def save_results():
     if not found_emails:
+        messagebox.showwarning("No Results", "No emails to export.")
         return
-    directory = filedialog.askdirectory(initialdir=os.path.expanduser("~/Documents"))
-    if not directory:
+    folder = filedialog.askdirectory(initialdir=os.path.expanduser("~/Documents"))
+    if not folder:
         return
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filepath = os.path.join(directory, f"Filtered_Emails_{timestamp}.xlsx")
-    export_to_excel(found_emails, filepath)
+    filename = f"Filtered_Emails_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    export_to_excel(found_emails, os.path.join(folder, filename))
+    messagebox.showinfo("Export Complete", "Excel file saved successfully.")
 
 
+# === GUI ===
 root = Tk()
 root.title("Outlook Email Search Tool")
+root.configure(bg="#2e2e2e")
 
-Label(root, text="Shared Mailbox (e.g. backtesting@abc.com):").grid(row=0, column=0, sticky="w")
-mailbox_entry = Entry(root, width=50)
-mailbox_entry.grid(row=0, column=1)
+style = Style()
+style.theme_use("clam")
+style.configure(".", background="#2e2e2e", foreground="white", fieldbackground="#3e3e3e")
+style.map("TCombobox", fieldbackground=[("readonly", "#3e3e3e")], foreground=[("readonly", "white")])
 
-Label(root, text="Subject must contain (comma-separated):").grid(row=1, column=0, sticky="w")
-subject_include = Entry(root, width=50)
-subject_include.grid(row=1, column=1)
+def label(row, text):
+    Label(root, text=text, bg="#2e2e2e", fg="white").grid(row=row, column=0, sticky="w", pady=2)
 
-Label(root, text="Subject must NOT contain:").grid(row=2, column=0, sticky="w")
-subject_exclude = Entry(root, width=50)
-subject_exclude.grid(row=2, column=1)
+def entry(row, width=50):
+    e = Entry(root, width=width, bg="#3e3e3e", fg="white", insertbackground="white")
+    e.grid(row=row, column=1, sticky="w", pady=2)
+    return e
 
-Label(root, text="Body must contain:").grid(row=3, column=0, sticky="w")
-body_keywords = Entry(root, width=50)
-body_keywords.grid(row=3, column=1)
+def dropdown(row, values, default):
+    cb = Combobox(root, values=values, width=5, state="readonly")
+    cb.set(default)
+    cb.grid(row=row, column=2, sticky="w", padx=5)
+    return cb
 
-Label(root, text="Attachment filename contains:").grid(row=4, column=0, sticky="w")
-attachment_keywords = Entry(root, width=50)
-attachment_keywords.grid(row=4, column=1)
+label(0, "Shared Mailbox (optional):")
+mailbox_entry = entry(0)
 
-Label(root, text="Sender must contain:").grid(row=5, column=0, sticky="w")
-sender_keywords = Entry(root, width=50)
-sender_keywords.grid(row=5, column=1)
+label(1, "Subject contains:")
+subject_include = entry(1)
+subject_logic = dropdown(1, ["AND", "OR"], "AND")
 
-Label(root, text="Subject logic (AND/OR):").grid(row=6, column=0, sticky="w")
-subject_logic = Combobox(root, values=["AND", "OR"])
-subject_logic.set("AND")
-subject_logic.grid(row=6, column=1)
+label(2, "Subject NOT contains:")
+subject_exclude = entry(2)
+subject_exclude_logic = dropdown(2, ["AND", "OR"], "OR")
 
-Label(root, text="Body logic (AND/OR):").grid(row=7, column=0, sticky="w")
-body_logic = Combobox(root, values=["AND", "OR"])
-body_logic.set("OR")
-body_logic.grid(row=7, column=1)
+label(3, "Body contains:")
+body_keywords = entry(3)
+body_logic = dropdown(3, ["AND", "OR"], "OR")
 
-Label(root, text="Start Date (YYYY-MM-DD):").grid(row=8, column=0, sticky="w")
-start_date = Entry(root, width=20)
-start_date.insert(0, "2025-01-01")
-start_date.grid(row=8, column=1, sticky="w")
+label(4, "Attachment keywords:")
+attachment_keywords = entry(4)
+attachment_logic = dropdown(4, ["AND", "OR"], "OR")
 
-Label(root, text="End Date (YYYY-MM-DD):").grid(row=9, column=0, sticky="w")
-end_date = Entry(root, width=20)
-end_date.insert(0, datetime.today().strftime("%Y-%m-%d"))
-end_date.grid(row=9, column=1, sticky="w")
+label(5, "Sender keywords:")
+sender_keywords = entry(5)
+sender_logic = dropdown(5, ["AND", "OR"], "OR")
 
-Label(root, text="Max emails to return (optional):").grid(row=10, column=0, sticky="w")
-limit = Entry(root, width=10)
-limit.grid(row=10, column=1, sticky="w")
+label(6, "Start Date:")
+start_date = DateEntry(root, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
+start_date.grid(row=6, column=1, sticky="w", pady=2)
 
-Button(root, text="Run Search", command=run_search_ui).grid(row=11, column=0, pady=10)
-Button(root, text="Export to Excel", command=export_results_ui).grid(row=11, column=1, pady=10)
+label(7, "End Date:")
+end_date = DateEntry(root, width=15, background="darkblue", foreground="white", date_pattern="yyyy-mm-dd")
+end_date.grid(row=7, column=1, sticky="w", pady=2)
 
-Label(root, text="Results:").grid(row=12, column=0, sticky="nw")
-result_output = ScrolledText(root, height=20, width=100)
-result_output.grid(row=13, column=0, columnspan=2)
+label(8, "Max results (optional):")
+limit = entry(8, width=10)
+
+Button(root, text="Run Search", command=run_search, bg="#444", fg="white").grid(row=9, column=0, pady=10)
+Button(root, text="Export to Excel", command=save_results, bg="#444", fg="white").grid(row=9, column=1, pady=10)
+
+label(10, "Results:")
+output_box = ScrolledText(root, width=100, height=20, bg="#1e1e1e", fg="white", insertbackground="white")
+output_box.grid(row=11, column=0, columnspan=3, pady=5)
 
 found_emails = []
 root.mainloop()
