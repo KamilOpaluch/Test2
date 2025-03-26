@@ -21,20 +21,7 @@ def get_shared_inbox(smtp_address_or_display_name):
     else:
         raise Exception(f"Could not resolve shared mailbox: {smtp_address_or_display_name}")
 
-def recipient_matches(msg, target_email_or_name):
-    target = target_email_or_name.lower()
-    try:
-        for i in range(msg.Recipients.Count):
-            r = msg.Recipients.Item(i + 1)
-            name = r.Name.lower()
-            address = r.AddressEntry.Address.lower()
-            if target in name or target in address:
-                return True
-    except:
-        pass
-    return False
-
-def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_name):
+def search_matching_emails(inbox_folder, keyword, after_date):
     messages = inbox_folder.Items
     messages.Sort("[ReceivedTime]", True)  # Sort newest first
 
@@ -50,21 +37,15 @@ def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_na
             if received.tzinfo is None:
                 received = received.replace(tzinfo=timezone.utc)
 
-            # Skip old messages
+            # Stop if we're past the date threshold
             if received < after_date:
-                break  # messages are sorted, safe to stop
+                break
 
             print(f"Checking: {received.strftime('%Y-%m-%d %H:%M')} | {subject}")
 
-            if keyword.lower() not in subject.lower():
-                continue
-
-            if not recipient_matches(msg, target_email_or_name):
-                print(f"Skipped (recipient mismatch): {subject}")
-                continue
-
-            print(f"Matched: {subject}")
-            results.append((subject, received.strftime("%Y-%m-%d %H:%M")))
+            if keyword.lower() in subject.lower():
+                print(f"Matched: {subject}")
+                results.append((subject, received.strftime("%Y-%m-%d %H:%M")))
         except Exception as e:
             print(f"Skipped due to error: {e}")
             continue
@@ -83,7 +64,7 @@ def write_to_excel(data, output_path):
 # === RUN ===
 try:
     inbox = get_shared_inbox(shared_mailbox)
-    matches = search_matching_emails(inbox, subject_keyword, after_date, shared_mailbox)
+    matches = search_matching_emails(inbox, subject_keyword, after_date)
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
