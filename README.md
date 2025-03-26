@@ -1,12 +1,12 @@
 import win32com.client
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from openpyxl import Workbook
 
 # === CONFIGURATION ===
 shared_mailbox = "backtesting@abc.com"
 subject_keyword = "Backtesting VaR"
-after_date = datetime(2025, 1, 1)
+after_date = datetime(2025, 1, 1, tzinfo=timezone.utc)  # Timezone-aware
 
 def get_shared_inbox(smtp_address_or_display_name):
     outlook = win32com.client.Dispatch("Outlook.Application")
@@ -36,7 +36,7 @@ def recipient_matches(msg, target_email_or_name):
 
 def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_name):
     messages = inbox_folder.Items
-    messages.Sort("[ReceivedTime]", True)  # Sort descending
+    messages.Sort("[ReceivedTime]", True)  # Sort newest first
 
     results = []
 
@@ -46,9 +46,13 @@ def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_na
             received = msg.ReceivedTime
             subject = msg.Subject
 
+            # Ensure both datetimes are timezone-aware
+            if received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
+
             # Skip old messages
             if received < after_date:
-                break  # Messages are sorted, no need to go further
+                break  # messages are sorted, safe to stop
 
             print(f"Checking: {received.strftime('%Y-%m-%d %H:%M')} | {subject}")
 
