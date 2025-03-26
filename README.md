@@ -1,5 +1,6 @@
 import threading
 import win32com.client
+import pythoncom
 import os
 from datetime import datetime, timezone
 from tkinter import *
@@ -32,6 +33,7 @@ def match_keywords(text, keywords, logic):
 
 
 def search_emails_thread(filters, on_result, on_done):
+    pythoncom.CoInitialize()
     try:
         inbox = get_outlook_inbox(filters.get('mailbox'))
         items = inbox.Items
