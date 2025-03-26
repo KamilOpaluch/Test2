@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from tkcalendar import DateEntry
 from tkinter.scrolledtext import ScrolledText
 
-# === Outlook and Email Logic ===
+MAX_SCAN_LIMIT = 1000  # Absolute maximum number of emails to scan
 
 def get_outlook_inbox(mailbox=None):
     outlook = win32com.client.Dispatch("Outlook.Application")
@@ -20,7 +20,8 @@ def get_outlook_inbox(mailbox=None):
         recipient.Resolve()
         if recipient.Resolved:
             return namespace.GetSharedDefaultFolder(recipient, 6)
-        raise Exception(f"Cannot access mailbox: {mailbox}")
+        else:
+            raise Exception(f"Shared mailbox '{mailbox}' could not be resolved.")
     return namespace.GetDefaultFolder(6)
 
 def match_keywords(text, keywords, logic):
@@ -30,7 +31,7 @@ def match_keywords(text, keywords, logic):
     text = text.lower()
     return all(k.lower() in text for k in keywords) if logic == "AND" else any(k.lower() in text for k in keywords)
 
-def search_emails_thread(filters, on_result, on_done):
+def search_emails_thread(filters, on_result, on_done, on_debug):
     pythoncom.CoInitialize()
     try:
         inbox = get_outlook_inbox(filters.get('mailbox'))
@@ -43,9 +44,15 @@ def search_emails_thread(filters, on_result, on_done):
         messages.Sort("[ReceivedTime]", True)
 
         count = 0
+        scanned = 0
         results = []
 
         for msg in messages:
+            if scanned >= MAX_SCAN_LIMIT:
+                on_debug(f"Stopped after scanning {MAX_SCAN_LIMIT} emails (max scan limit).")
+                break
+            scanned += 1
+
             try:
                 subject = msg.Subject or ""
                 body = msg.Body or ""
@@ -56,16 +63,21 @@ def search_emails_thread(filters, on_result, on_done):
                 received = msg.ReceivedTime
 
                 if not match_keywords(subject, filters['subject_include'], filters['subject_logic']):
+                    on_debug(f"Skipped: subject missing required keywords.")
                     continue
                 if match_keywords(subject, filters['subject_exclude'], filters['subject_exclude_logic']):
+                    on_debug(f"Skipped: subject contains excluded keywords.")
                     continue
                 if not match_keywords(body, filters['body_keywords'], filters['body_logic']):
+                    on_debug(f"Skipped: body missing required keywords.")
                     continue
                 if not match_keywords(sender, filters['sender_keywords'], filters['sender_logic']):
+                    on_debug(f"Skipped: sender mismatch.")
                     continue
-                if filters['attachment_keywords']:
+                if [k.strip() for k in filters['attachment_keywords'] if k.strip()]:
                     all_attachments = ' '.join(attachments).lower()
                     if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
+                        on_debug(f"Skipped: attachment name mismatch.")
                         continue
 
                 result = {
@@ -84,15 +96,18 @@ def search_emails_thread(filters, on_result, on_done):
 
                 count += 1
                 if filters['limit'] and count >= filters['limit']:
+                    on_debug(f"Limit reached: {filters['limit']} matches found.")
                     break
-            except Exception:
+
+            except Exception as e:
+                on_debug(f"Skipped due to error: {str(e)}")
                 continue
 
         on_done(results)
     except Exception as e:
         on_done([], error=str(e))
 
-# === GUI Setup ===
+# === GUI ===
 
 def run_search():
     try:
@@ -114,6 +129,7 @@ def run_search():
         }
 
         output_box.delete("1.0", END)
+        debug_box.delete("1.0", END)
         search_button.config(state=DISABLED)
         status_label.config(text="Searching...")
 
@@ -122,7 +138,7 @@ def run_search():
 
         threading.Thread(
             target=search_emails_thread,
-            args=(filters, on_result_found, on_search_done),
+            args=(filters, on_result_found, on_search_done, on_debug_message),
             daemon=True
         ).start()
 
@@ -144,6 +160,10 @@ def on_search_done(results, error=None):
         if not results:
             output_box.insert(END, "No matching emails found.\n")
         status_label.config(text=f"Search complete. {len(results)} emails found.")
+
+def on_debug_message(msg):
+    debug_box.insert(END, f"{msg}\n")
+    debug_box.see(END)
 
 def save_results():
     if not found_emails:
@@ -230,8 +250,12 @@ status_label = Label(root, text="Ready", bg="#2e2e2e", fg="lightgray")
 status_label.grid(row=10, column=0, columnspan=2, sticky="w")
 
 label(11, "Results:")
-output_box = ScrolledText(root, width=100, height=20, bg="#1e1e1e", fg="white", insertbackground="white")
+output_box = ScrolledText(root, width=100, height=12, bg="#1e1e1e", fg="white", insertbackground="white")
 output_box.grid(row=12, column=0, columnspan=3, pady=5)
+
+label(13, "Debug Log:")
+debug_box = ScrolledText(root, width=100, height=6, bg="#1e1e1e", fg="gray", insertbackground="white")
+debug_box.grid(row=14, column=0, columnspan=3, pady=5)
 
 found_emails = []
 root.mainloop()
