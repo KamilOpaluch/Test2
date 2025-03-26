@@ -40,7 +40,14 @@ def match_keywords(text, keywords, logic):
 
 def search_emails(filters):
     inbox = get_outlook_inbox(filters.get('mailbox'))
-    messages = inbox.Items
+
+    # Optimize with Restrict by date
+    items = inbox.Items
+    restriction = "[ReceivedTime] >= '{}' AND [ReceivedTime] <= '{}'".format(
+        filters['start_date'].strftime("%m/%d/%Y %I:%M %p"),
+        filters['end_date'].strftime("%m/%d/%Y %I:%M %p")
+    )
+    messages = items.Restrict(restriction)
     messages.Sort("[ReceivedTime]", True)
 
     results = []
@@ -48,18 +55,13 @@ def search_emails(filters):
 
     for msg in messages:
         try:
-            received = msg.ReceivedTime
-            if received.tzinfo is None:
-                received = received.replace(tzinfo=timezone.utc)
-            if not (filters['start_date'] <= received <= filters['end_date']):
-                continue
-
             subject = msg.Subject or ""
             body = msg.Body or ""
             sender = msg.SenderEmailAddress or ""
             attachments = [att.FileName for att in msg.Attachments]
             recipients = [msg.Recipients.Item(i + 1).Address for i in range(msg.Recipients.Count)]
             cc = msg.CC if msg.CC else ""
+            received = msg.ReceivedTime
 
             if not match_keywords(subject, filters['subject_include'], filters['subject_logic']):
                 continue
@@ -71,7 +73,7 @@ def search_emails(filters):
                 continue
             if filters['attachment_keywords']:
                 all_attachments = ' '.join(attachments).lower()
-                if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
+                if not match_keywords(all_attachments, filters['attachment_logic']):
                     continue
 
             results.append({
