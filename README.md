@@ -4,7 +4,7 @@ import os
 from openpyxl import Workbook
 
 # === CONFIGURATION ===
-shared_mailbox = "backtesting@abc.com"  # Can also be just "Backtesting"
+shared_mailbox = "backtesting@abc.com"  # Or display name if that's what appears in Outlook
 subject_keyword = "Backtesting VaR"
 after_date = datetime(2025, 1, 1)
 
@@ -37,8 +37,14 @@ def recipient_matches(msg, target_email_or_name):
 def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_name):
     messages = inbox_folder.Items
 
-    # Use Restrict to filter by date and subject
-    restriction = f"[ReceivedTime] >= '{after_date.strftime('%m/%d/%Y %I:%M %p')}' AND [Subject] LIKE '%{keyword}%'"
+    # Use SQL-style Restrict to avoid 4096 error and enable LIKE
+    restriction = (
+        "@SQL=\"urn:schemas:httpmail:datereceived\" >= '"
+        + after_date.strftime("%Y-%m-%dT%H:%M:%S")
+        + "' AND "
+        + "\"urn:schemas:httpmail:subject\" LIKE '%" + keyword + "%'"
+    )
+
     filtered = messages.Restrict(restriction)
     filtered.Sort("[ReceivedTime]", True)
 
