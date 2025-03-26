@@ -23,14 +23,12 @@ def get_outlook_inbox(mailbox=None):
         raise Exception(f"Cannot access mailbox: {mailbox}")
     return namespace.GetDefaultFolder(6)
 
-
 def match_keywords(text, keywords, logic):
-    text = text.lower()
-    keywords = [k.lower().strip() for k in keywords if k.strip()]
+    keywords = [k.strip() for k in keywords if k.strip()]
     if not keywords:
         return True
-    return all(k in text for k in keywords) if logic == "AND" else any(k in text for k in keywords)
-
+    text = text.lower()
+    return all(k.lower() in text for k in keywords) if logic == "AND" else any(k.lower() in text for k in keywords)
 
 def search_emails_thread(filters, on_result, on_done):
     pythoncom.CoInitialize()
@@ -67,7 +65,7 @@ def search_emails_thread(filters, on_result, on_done):
                     continue
                 if filters['attachment_keywords']:
                     all_attachments = ' '.join(attachments).lower()
-                    if not match_keywords(all_attachments, filters['attachment_logic']):
+                    if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
                         continue
 
                 result = {
@@ -93,7 +91,6 @@ def search_emails_thread(filters, on_result, on_done):
         on_done(results)
     except Exception as e:
         on_done([], error=str(e))
-
 
 # === GUI Setup ===
 
@@ -133,12 +130,10 @@ def run_search():
         messagebox.showerror("Error", str(e))
         search_button.config(state=NORMAL)
 
-
 def on_result_found(result):
     found_emails.append(result)
     output_box.insert(END, f"{len(found_emails)}. {result['received']} | {result['subject']} | {result['body_preview']}\n")
     output_box.see(END)
-
 
 def on_search_done(results, error=None):
     search_button.config(state=NORMAL)
@@ -149,7 +144,6 @@ def on_search_done(results, error=None):
         if not results:
             output_box.insert(END, "No matching emails found.\n")
         status_label.config(text=f"Search complete. {len(results)} emails found.")
-
 
 def save_results():
     if not found_emails:
@@ -167,7 +161,6 @@ def save_results():
         ws.append([r["subject"], r["received"], r["body"], r["recipients"], r["cc"], r["attachments"]])
     wb.save(os.path.join(folder, filename))
     messagebox.showinfo("Export Complete", "Excel file saved successfully.")
-
 
 # === Build GUI ===
 
