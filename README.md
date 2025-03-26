@@ -23,48 +23,46 @@ def get_shared_inbox(smtp_address_or_display_name):
 
 def recipient_matches(msg, target_email_or_name):
     target = target_email_or_name.lower()
-    for i in range(msg.Recipients.Count):
-        r = msg.Recipients.Item(i + 1)
-        try:
+    try:
+        for i in range(msg.Recipients.Count):
+            r = msg.Recipients.Item(i + 1)
             name = r.Name.lower()
             address = r.AddressEntry.Address.lower()
             if target in name or target in address:
                 return True
-        except:
-            continue
+    except:
+        pass
     return False
 
 def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_name):
     messages = inbox_folder.Items
-
-    # Restrict only by date to avoid error
-    restriction = "[ReceivedTime] >= '" + after_date.strftime("%m/%d/%Y %I:%M %p") + "'"
-    filtered = messages.Restrict(restriction)
-    filtered.Sort("[ReceivedTime]", True)
+    messages.Sort("[ReceivedTime]", True)  # Sort descending
 
     results = []
 
-    for msg in filtered:
+    print("Scanning emails...")
+    for msg in messages:
         try:
-            subject = msg.Subject
             received = msg.ReceivedTime
-            sender = msg.SenderEmailAddress
+            subject = msg.Subject
 
-            print(f"Checking: {received.strftime('%Y-%m-%d %H:%M')} | {subject} | From: {sender}")
+            # Skip old messages
+            if received < after_date:
+                break  # Messages are sorted, no need to go further
 
-            # Now filter subject manually (contains match)
+            print(f"Checking: {received.strftime('%Y-%m-%d %H:%M')} | {subject}")
+
             if keyword.lower() not in subject.lower():
                 continue
 
             if not recipient_matches(msg, target_email_or_name):
-                print(f"Skipped (recipient not matching): {subject}")
+                print(f"Skipped (recipient mismatch): {subject}")
                 continue
 
             print(f"Matched: {subject}")
             results.append((subject, received.strftime("%Y-%m-%d %H:%M")))
-
         except Exception as e:
-            print(f"Error processing message: {e}")
+            print(f"Skipped due to error: {e}")
             continue
 
     return results
@@ -78,19 +76,18 @@ def write_to_excel(data, output_path):
         ws.append([subject, received])
     wb.save(output_path)
 
-# === RUN SCRIPT ===
+# === RUN ===
 try:
     inbox = get_shared_inbox(shared_mailbox)
     matches = search_matching_emails(inbox, subject_keyword, after_date, shared_mailbox)
 
-    # Save to Excel in script's folder
     output_dir = os.path.dirname(os.path.abspath(__file__))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     output_file = os.path.join(output_dir, f"Backtesting_VAR_Emails_{timestamp}.xlsx")
 
     write_to_excel(matches, output_file)
 
-    print(f"\nSaved {len(matches)} matching emails to:\n{output_file}")
+    print(f"\nSaved {len(matches)} emails to:\n{output_file}")
 
 except Exception as e:
-    print(f"Error: {e}")
+    print(f"Fatal Error: {e}")
