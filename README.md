@@ -30,66 +30,67 @@ def match_keywords(text, keywords, logic):
     return all(k.lower() in text for k in keywords) if logic == "AND" else any(k.lower() in text for k in keywords)
 
 def open_email_by_entryid(entryid):
-    pythoncom.CoInitialize()
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    namespace = outlook.GetNamespace("MAPI")
-    mail_item = namespace.GetItemFromID(entryid)
-    mail_item.Display()
+    try:
+        pythoncom.CoInitialize()
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        namespace = outlook.GetNamespace("MAPI")
+        mail_item = namespace.GetItemFromID(entryid)
+        mail_item.Display()
+    except Exception as e:
+        messagebox.showerror("Open Email Error", str(e))
 
 def search_emails_thread(filters, on_result, on_done, on_debug):
     pythoncom.CoInitialize()
     try:
         inbox = get_outlook_inbox(filters.get('mailbox'))
         items = inbox.Items
-        restriction = "[ReceivedTime] >= '{}' AND [ReceivedTime] <= '{}'".format(
-            filters['start_date'].strftime("%m/%d/%Y %I:%M %p"),
-            filters['end_date'].strftime("%m/%d/%Y %I:%M %p")
-        )
-        messages = items.Restrict(restriction)
-        messages.Sort("[ReceivedTime]", True)
+        items.Sort("[ReceivedTime]", True)
 
+        results = []
         count = 0
         scanned = 0
-        results = []
 
-        for msg in messages:
+        for msg in items:
             if scanned >= MAX_SCAN_LIMIT:
-                on_debug(f"Stopped after scanning {MAX_SCAN_LIMIT} emails (max scan limit).")
+                on_debug(f"Stopped after scanning {MAX_SCAN_LIMIT} emails.")
                 break
             scanned += 1
 
             try:
+                received = msg.ReceivedTime
+                if received < filters['start_date']:
+                    on_debug("Reached emails older than start date. Stopping early.")
+                    break
+                if received > filters['end_date']:
+                    continue
+
                 subject = msg.Subject or ""
                 body = msg.Body or ""
                 sender = msg.SenderEmailAddress or ""
                 attachments = [att.FileName for att in msg.Attachments]
                 recipients = [msg.Recipients.Item(i + 1).Address for i in range(msg.Recipients.Count)]
-                cc = msg.CC if msg.CC else ""
-                received = msg.ReceivedTime
 
                 if not match_keywords(subject, filters['subject_include'], filters['subject_logic']):
-                    on_debug(f"Skipped: subject does not contain any of: {filters['subject_include']}")
                     continue
                 if any(k.strip() for k in filters['subject_exclude']):
                     if match_keywords(subject, filters['subject_exclude'], filters['subject_exclude_logic']):
-                        on_debug(f"Skipped: subject contains excluded keywords: {filters['subject_exclude']}")
                         continue
                 if not match_keywords(body, filters['body_keywords'], filters['body_logic']):
-                    on_debug("Skipped: body does not contain required keywords.")
                     continue
                 if not match_keywords(sender, filters['sender_keywords'], filters['sender_logic']):
-                    on_debug("Skipped: sender does not match provided filters.")
                     continue
                 if any(k.strip() for k in filters['attachment_keywords']):
                     all_attachments = ' '.join(attachments).lower()
                     if not match_keywords(all_attachments, filters['attachment_keywords'], filters['attachment_logic']):
-                        on_debug("Skipped: attachment filename does not match keywords.")
                         continue
+
+                preview = body.replace('\t', ' ').replace('\n', ' ')
+                preview = (preview[:100] + '...') if len(preview) > 100 else preview
 
                 result = {
                     "subject": subject,
                     "received": received.strftime("%Y-%m-%d %H:%M"),
-                    "body_preview": body[:50].replace("\n", " "),
+                    "body_preview": preview,
                     "entryid": msg.EntryID
                 }
 
@@ -98,16 +99,15 @@ def search_emails_thread(filters, on_result, on_done, on_debug):
 
                 count += 1
                 if filters['limit'] and count >= filters['limit']:
-                    on_debug(f"Reached match limit: {filters['limit']}")
                     break
 
-            except Exception as e:
-                on_debug(f"Skipped due to error: {str(e)}")
+            except Exception:
                 continue
 
         on_done(results)
     except Exception as e:
         on_done([], error=str(e))
+
 
 def run_search():
     try:
@@ -128,8 +128,9 @@ def run_search():
             'limit': int(limit.get()) if limit.get().isdigit() else None
         }
 
-        for row in tree.get_children():
-            tree.delete(row)
+        for widget in results_frame.winfo_children():
+            widget.destroy()
+
         debug_box.delete("1.0", END)
         search_button.config(state=DISABLED)
         status_label.config(text="Searching...")
@@ -149,7 +150,12 @@ def run_search():
 
 def on_result_found(result):
     found_emails.append(result)
-    tree.insert("", END, values=(result['received'], result['subject'], result['body_preview'], "Open"), tags=(result['entryid'],))
+    row = len(found_emails)
+
+    Label(results_frame, text=result['received'], bg="#1e1e1e", fg="white", anchor="w", width=15).grid(row=row, column=0, sticky="w")
+    Label(results_frame, text=result['subject'], bg="#1e1e1e", fg="white", anchor="w", width=40).grid(row=row, column=1, sticky="w")
+    Label(results_frame, text=result['body_preview'], bg="#1e1e1e", fg="gray", anchor="w", width=60).grid(row=row, column=2, sticky="w")
+    Button(results_frame, text="Open", bg="#333", fg="white", command=lambda eid=result['entryid']: open_email_by_entryid(eid)).grid(row=row, column=3, padx=5)
 
 def on_search_done(results, error=None):
     search_button.config(state=NORMAL)
@@ -162,15 +168,6 @@ def on_search_done(results, error=None):
 def on_debug_message(msg):
     debug_box.insert(END, f"{msg}\n")
     debug_box.see(END)
-
-def on_tree_click(event):
-    item = tree.identify_row(event.y)
-    if not item:
-        return
-    col = tree.identify_column(event.x)
-    if col == '#4':  # 'Open' column
-        entryid = tree.item(item, 'tags')[0]
-        open_email_by_entryid(entryid)
 
 def save_results():
     if not found_emails:
@@ -192,30 +189,28 @@ def save_results():
 # GUI
 root = Tk()
 root.title("Outlook Email Search Tool")
-root.configure(bg="#2e2e2e")
+root.configure(bg="#1e1e1e")
 
 style = ttk.Style()
 style.theme_use("clam")
-style.configure("TLabel", background="#2e2e2e", foreground="white")
-style.configure("TButton", background="#3e3e3e", foreground="white", padding=5)
-style.configure("Treeview", background="#1e1e1e", foreground="white", fieldbackground="#1e1e1e")
-style.configure("Treeview.Heading", background="#333", foreground="white")
+style.configure("TLabel", background="#1e1e1e", foreground="white")
+style.configure("TButton", background="#333", foreground="white", padding=5)
 style.map("TButton", background=[("active", "#444")])
 
-frm = Frame(root, bg="#2e2e2e")
+frm = Frame(root, bg="#1e1e1e")
 frm.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
 def add_label_entry_combo(r, label_txt):
     Label(frm, text=label_txt).grid(row=r, column=0, sticky="w")
-    e = Entry(frm, width=50, bg="#3e3e3e", fg="white", insertbackground="white")
+    e = Entry(frm, width=50, bg="#2a2a2a", fg="white", relief=FLAT)
     e.grid(row=r, column=1, padx=5, pady=2)
-    cb = Combobox(frm, values=["AND", "OR"], width=5, state="readonly")
+    cb = ttk.Combobox(frm, values=["AND", "OR"], width=5, state="readonly")
     cb.set("OR")
     cb.grid(row=r, column=2, padx=5)
     return e, cb
 
 Label(frm, text="Shared Mailbox (optional):").grid(row=0, column=0, sticky="w")
-mailbox_entry = Entry(frm, width=50, bg="#3e3e3e", fg="white", insertbackground="white")
+mailbox_entry = Entry(frm, width=50, bg="#2a2a2a", fg="white", relief=FLAT)
 mailbox_entry.grid(row=0, column=1, columnspan=2, pady=2, sticky="w")
 
 subject_include, subject_logic = add_label_entry_combo(1, "Subject contains:")
@@ -233,7 +228,7 @@ end_date = DateEntry(frm, width=15, background="darkblue", foreground="white", d
 end_date.grid(row=7, column=1, sticky="w", pady=2)
 
 Label(frm, text="Max results:").grid(row=8, column=0, sticky="w")
-limit = Entry(frm, width=10, bg="#3e3e3e", fg="white", insertbackground="white")
+limit = Entry(frm, width=10, bg="#2a2a2a", fg="white", relief=FLAT)
 limit.grid(row=8, column=1, sticky="w", pady=2)
 
 search_button = Button(frm, text="Run Search", command=run_search)
@@ -241,21 +236,19 @@ search_button.grid(row=9, column=0, pady=10)
 
 Button(frm, text="Export to Excel", command=save_results).grid(row=9, column=1, pady=10)
 
-status_label = Label(frm, text="Ready", fg="lightgray", bg="#2e2e2e")
+status_label = Label(frm, text="Ready", fg="lightgray", bg="#1e1e1e")
 status_label.grid(row=10, column=0, columnspan=2, sticky="w")
 
-columns = ("received", "subject", "preview", "action")
-tree = ttk.Treeview(root, columns=columns, show="headings", height=10)
-tree.heading("received", text="Date")
-tree.heading("subject", text="Subject")
-tree.heading("preview", text="Body Preview")
-tree.heading("action", text="Action")
-tree.column("action", width=70, anchor="center")
-tree.grid(row=11, column=0, sticky="nsew", padx=10, pady=5)
-tree.bind("<ButtonRelease-1>", on_tree_click)
+# Results table header
+results_frame = Frame(root, bg="#1e1e1e")
+results_frame.grid(row=11, column=0, padx=10, pady=5, sticky="nsew")
+Label(results_frame, text="Date", bg="#1e1e1e", fg="white", width=15, anchor="w").grid(row=0, column=0, sticky="w")
+Label(results_frame, text="Subject", bg="#1e1e1e", fg="white", width=40, anchor="w").grid(row=0, column=1, sticky="w")
+Label(results_frame, text="Preview", bg="#1e1e1e", fg="white", width=60, anchor="w").grid(row=0, column=2, sticky="w")
+Label(results_frame, text="Action", bg="#1e1e1e", fg="white", width=10, anchor="center").grid(row=0, column=3)
 
-Label(root, text="Debug Log:", bg="#2e2e2e", fg="gray").grid(row=12, column=0, sticky="w", padx=10)
-debug_box = Text(root, width=120, height=6, bg="#1e1e1e", fg="gray", insertbackground="white")
+Label(root, text="Debug Log:", bg="#1e1e1e", fg="gray").grid(row=12, column=0, sticky="w", padx=10)
+debug_box = Text(root, width=120, height=6, bg="#121212", fg="gray", insertbackground="white", relief=FLAT)
 debug_box.grid(row=13, column=0, padx=10, pady=5)
 
 found_emails = []
