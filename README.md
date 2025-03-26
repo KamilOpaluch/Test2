@@ -4,7 +4,7 @@ import os
 from openpyxl import Workbook
 
 # === CONFIGURATION ===
-shared_mailbox = "backtesting@abc.com"  # Or display name if that's what appears in Outlook
+shared_mailbox = "backtesting@abc.com"
 subject_keyword = "Backtesting VaR"
 after_date = datetime(2025, 1, 1)
 
@@ -37,14 +37,8 @@ def recipient_matches(msg, target_email_or_name):
 def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_name):
     messages = inbox_folder.Items
 
-    # Use SQL-style Restrict to avoid 4096 error and enable LIKE
-    restriction = (
-        "@SQL=\"urn:schemas:httpmail:datereceived\" >= '"
-        + after_date.strftime("%Y-%m-%dT%H:%M:%S")
-        + "' AND "
-        + "\"urn:schemas:httpmail:subject\" LIKE '%" + keyword + "%'"
-    )
-
+    # Restrict only by date to avoid error
+    restriction = "[ReceivedTime] >= '" + after_date.strftime("%m/%d/%Y %I:%M %p") + "'"
     filtered = messages.Restrict(restriction)
     filtered.Sort("[ReceivedTime]", True)
 
@@ -57,6 +51,10 @@ def search_matching_emails(inbox_folder, keyword, after_date, target_email_or_na
             sender = msg.SenderEmailAddress
 
             print(f"Checking: {received.strftime('%Y-%m-%d %H:%M')} | {subject} | From: {sender}")
+
+            # Now filter subject manually (contains match)
+            if keyword.lower() not in subject.lower():
+                continue
 
             if not recipient_matches(msg, target_email_or_name):
                 print(f"Skipped (recipient not matching): {subject}")
