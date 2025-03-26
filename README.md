@@ -2,7 +2,6 @@ import win32com.client
 from openpyxl import load_workbook
 from datetime import datetime
 
-# Load search strings from Excel (column A from A2 downward)
 def load_subject_filters(excel_path):
     wb = load_workbook(excel_path)
     ws = wb.active
@@ -13,56 +12,62 @@ def load_subject_filters(excel_path):
             filters.append(str(cell_value).strip())
     return filters
 
-# Connect to Outlook and search emails
-def search_emails(folder_name, filters, after_date):
+def get_shared_inbox(smtp_address):
     outlook = win32com.client.Dispatch("Outlook.Application")
     namespace = outlook.GetNamespace("MAPI")
 
-    # Find the 'Backtesting' folder (you may need to adjust if it's a group mailbox)
-    folder = None
     for i in range(namespace.Folders.Count):
-        root_folder = namespace.Folders.Item(i + 1)
+        mailbox = namespace.Folders.Item(i + 1)
         try:
-            folder = root_folder.Folders(folder_name)
-            break
-        except:
+            recipient = namespace.CreateRecipient(smtp_address)
+            recipient.Resolve()
+            shared_folder = namespace.GetSharedDefaultFolder(recipient, 6)  # 6 = Inbox
+            return shared_folder
+        except Exception:
             continue
 
-    if folder is None:
-        raise Exception(f"Folder '{folder_name}' not found.")
+    raise Exception(f"Shared inbox for '{smtp_address}' not found or not accessible.")
 
+def search_emails_in_shared_inbox(inbox_folder, filters, after_date, target_email):
     matching_emails = []
-
-    # Loop through emails
-    messages = folder.Items
-    messages.Sort("[SentOn]", True)  # Newest first
+    messages = inbox_folder.Items
+    messages.Sort("[SentOn]", True)
 
     for msg in messages:
         try:
-            sent_on = msg.SentOn
-            if sent_on < after_date:
+            if msg.SentOn < after_date:
+                continue
+
+            # Ensure email was sent to backtesting@abc.com
+            recipients = [msg.Recipients.Item(i + 1).AddressEntry.Address.lower()
+                          for i in range(msg.Recipients.Count)]
+
+            if not any(target_email.lower() in r for r in recipients):
                 continue
 
             subject = msg.Subject
             for pattern in filters:
                 if pattern.lower() in subject.lower():
-                    matching_emails.append((subject, sent_on.strftime("%Y-%m-%d %H:%M")))
+                    matching_emails.append((subject, msg.SentOn.strftime("%Y-%m-%d %H:%M")))
                     break
-        except Exception as e:
-            continue  # Skip broken items (e.g. meeting invites)
+        except Exception:
+            continue
 
     return matching_emails
 
-# === RUNNING THE SCRIPT ===
-excel_path = "C:\\Path\\To\\Your\\filters.xlsx"
+# === SETTINGS ===
+excel_path = "C:\\Path\\To\\filters.xlsx"
+shared_mailbox = "backtesting@abc.com"
+after_date = datetime(2025, 1, 1)
 filters = load_subject_filters(excel_path)
 
-after_date = datetime(2025, 1, 1)
-folder_name = "Backtesting"
+# === RUN ===
+try:
+    inbox = get_shared_inbox(shared_mailbox)
+    results = search_emails_in_shared_inbox(inbox, filters, after_date, shared_mailbox)
 
-results = search_emails(folder_name, filters, after_date)
-
-# Print results
-print(f"\nFound {len(results)} matching emails:\n")
-for subject, sent_on in results:
-    print(f"{sent_on} | {subject}")
+    print(f"\nFound {len(results)} matching emails:\n")
+    for subject, sent_on in results:
+        print(f"{sent_on} | {subject}")
+except Exception as e:
+    print(f"Error: {e}")
