@@ -1,78 +1,68 @@
 import win32com.client
-import re
+from openpyxl import load_workbook
+from datetime import datetime
 
-def expand_address_entry(address_entry):
-    emails = []
+# Load search strings from Excel (column A from A2 downward)
+def load_subject_filters(excel_path):
+    wb = load_workbook(excel_path)
+    ws = wb.active
+    filters = []
+    for row in ws.iter_rows(min_row=2, min_col=1, max_col=1):
+        cell_value = row[0].value
+        if cell_value:
+            filters.append(str(cell_value).strip())
+    return filters
 
-    try:
-        # Try to expand group
-        members = address_entry.Members
-        if members is not None:
-            for i in range(1, members.Count + 1):
-                member = members.Item(i)
-                emails.extend(expand_address_entry(member))
-        else:
-            # Not a group: try to get Exchange email
-            exch_user = address_entry.GetExchangeUser()
-            if exch_user and exch_user.PrimarySmtpAddress:
-                emails.append(exch_user.PrimarySmtpAddress)
-            else:
-                smtp_address = try_get_smtp_from_address_entry(address_entry)
-                if smtp_address:
-                    emails.append(smtp_address)
-    except:
-        smtp_address = try_get_smtp_from_address_entry(address_entry)
-        if smtp_address:
-            emails.append(smtp_address)
-
-    return emails
-
-def try_get_smtp_from_address_entry(address_entry):
-    try:
-        return address_entry.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x39FE001E")
-    except:
-        return None
-
-def resolve_and_expand(email_list):
+# Connect to Outlook and search emails
+def search_emails(folder_name, filters, after_date):
     outlook = win32com.client.Dispatch("Outlook.Application")
     namespace = outlook.GetNamespace("MAPI")
 
-    group_email_map = {}
-
-    for item in email_list:
+    # Find the 'Backtesting' folder (you may need to adjust if it's a group mailbox)
+    folder = None
+    for i in range(namespace.Folders.Count):
+        root_folder = namespace.Folders.Item(i + 1)
         try:
-            recipient = namespace.CreateRecipient(item)
-            if recipient.Resolve():
-                address_entry = recipient.AddressEntry
-                raw_emails = expand_address_entry(address_entry)
+            folder = root_folder.Folders(folder_name)
+            break
+        except:
+            continue
 
-                # Clean each email
-                clean_emails = list(filter(None, map(extract_email_only, raw_emails)))
-                group_email_map[item] = sorted(set(clean_emails))
-            else:
-                group_email_map[item] = ["(Unresolved)"]
+    if folder is None:
+        raise Exception(f"Folder '{folder_name}' not found.")
+
+    matching_emails = []
+
+    # Loop through emails
+    messages = folder.Items
+    messages.Sort("[SentOn]", True)  # Newest first
+
+    for msg in messages:
+        try:
+            sent_on = msg.SentOn
+            if sent_on < after_date:
+                continue
+
+            subject = msg.Subject
+            for pattern in filters:
+                if pattern.lower() in subject.lower():
+                    matching_emails.append((subject, sent_on.strftime("%Y-%m-%d %H:%M")))
+                    break
         except Exception as e:
-            group_email_map[item] = [f"(Exception: {e})"]
+            continue  # Skip broken items (e.g. meeting invites)
 
-    return group_email_map
+    return matching_emails
 
-def extract_email_only(item):
-    match = re.search(r'<(.*?)>', item)
-    if match:
-        return match.group(1)
-    elif '@' in item:
-        return item.strip()
-    return None
+# === RUNNING THE SCRIPT ===
+excel_path = "C:\\Path\\To\\Your\\filters.xlsx"
+filters = load_subject_filters(excel_path)
 
-# Input: list of groups or addresses
-input_emails = [
-    "Finance Team",
-    "hr@example.com"
-]
+after_date = datetime(2025, 1, 1)
+folder_name = "Backtesting"
 
-# Expand and print
-group_email_map = resolve_and_expand(input_emails)
+results = search_emails(folder_name, filters, after_date)
 
-print("\nGrouped Email List (copy-paste ready):\n")
-for group, emails in group_email_map.items():
-    print(f"{group}: {', '.join(emails)}")
+# Print results
+print(f"\nFound {len(results)} matching emails:\n")
+for subject, sent_on in results:
+    print(f"{sent_on} | {subject}")
