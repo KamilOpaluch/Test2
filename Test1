@@ -1,42 +1,44 @@
-import win32com.client
+import pyodbc
 import openpyxl
-import os
+import win32com.client
+
+def get_query_names(access_db_path):
+    conn_str = f"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={access_db_path};"
+    conn = pyodbc.connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT Name FROM MSysObjects WHERE Type=5 AND Flags=0")
+    query_names = [row.Name for row in cursor.fetchall()]
+    conn.close()
+    return query_names
 
 def export_queries_to_excel(access_db_path, excel_path):
-    # Open Access Application
+    query_names = get_query_names(access_db_path)
+
     access_app = win32com.client.Dispatch("Access.Application")
-    access_app.Visible = False
     access_app.OpenCurrentDatabase(access_db_path)
+    access_app.Visible = False  # UI stays hidden
 
-    # Get query definitions
     db = access_app.CurrentDb()
-    queries = db.QueryDefs
+    queries = {q.Name: q.SQL for q in db.QueryDefs if q.Name in query_names}
 
-    # Prepare Excel
+    # Excel
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Queries"
     ws.append(["Query Name", "SQL"])
 
-    for q in queries:
-        # Skip system/internal queries
-        if q.Name.startswith("~") or q.Name.startswith("MSys"):
-            continue
-        try:
-            ws.append([q.Name, q.SQL])
-        except Exception as e:
-            ws.append([q.Name, f"ERROR: {e}"])
+    for name in query_names:
+        sql = queries.get(name, "ERROR or not found")
+        ws.append([name, sql])
 
-    # Save Excel
     wb.save(excel_path)
 
-    # Clean up
     access_app.CloseCurrentDatabase()
     access_app.Quit()
 
 # Example usage
 access_db = r"C:\path\to\your\database.accdb"
-excel_output = r"C:\path\to\output\queries.xlsx"
-export_queries_to_excel(access_db, excel_output)
+excel_out = r"C:\path\to\queries.xlsx"
+export_queries_to_excel(access_db, excel_out)
 
-print("Export complete!")
+print("Exported all saved queries to Excel.")
