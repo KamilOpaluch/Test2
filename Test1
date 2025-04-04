@@ -1,65 +1,42 @@
-import pyodbc
+import win32com.client
+import openpyxl
 import os
 
-def estimate_table_size(row_count, column_info):
-    """Estimate table size in bytes using data types."""
-    type_sizes = {
-        'VARCHAR': 100, 'CHAR': 50, 'TEXT': 200,
-        'LONGCHAR': 200, 'INTEGER': 4, 'SMALLINT': 2,
-        'DOUBLE': 8, 'FLOAT': 8, 'DECIMAL': 8,
-        'CURRENCY': 8, 'DATETIME': 8, 'BIT': 1,
-        'BINARY': 50, 'LONGBINARY': 2000, 'OLEOBJECT': 2000
-    }
-    row_size = 0
-    for col in column_info:
-        col_type = col[1].upper()
-        size = type_sizes.get(col_type, 50)
-        row_size += size
-    return (row_size * row_count) / (1024 * 1024)  # MB
+def export_queries_to_excel(access_db_path, excel_path):
+    # Open Access Application
+    access_app = win32com.client.Dispatch("Access.Application")
+    access_app.Visible = False
+    access_app.OpenCurrentDatabase(access_db_path)
 
-def get_table_sizes(database_path):
-    conn_str = (
-        r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-        f'DBQ={database_path};'
-    )
-    
-    conn = pyodbc.connect(conn_str)
-    cursor = conn.cursor()
+    # Get query definitions
+    db = access_app.CurrentDb()
+    queries = db.QueryDefs
 
-    tables = [
-        row.table_name
-        for row in cursor.tables()
-        if row.table_type == 'TABLE'
-    ]
+    # Prepare Excel
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Queries"
+    ws.append(["Query Name", "SQL"])
 
-    table_info = []
-
-    for table in tables:
+    for q in queries:
+        # Skip system/internal queries
+        if q.Name.startswith("~") or q.Name.startswith("MSys"):
+            continue
         try:
-            # Get row count
-            cursor.execute(f"SELECT COUNT(*) FROM [{table}]")
-            row_count = cursor.fetchone()[0]
-
-            # Get column info: [(name, type_name, ...)]
-            columns = cursor.columns(table=table)
-            column_info = [(col.column_name, col.type_name) for col in columns]
-
-            # Estimate size
-            size_mb = round(estimate_table_size(row_count, column_info), 2)
-            table_info.append((table, size_mb, row_count))
+            ws.append([q.Name, q.SQL])
         except Exception as e:
-            print(f"Error reading table {table}: {e}")
+            ws.append([q.Name, f"ERROR: {e}"])
 
-    conn.close()
+    # Save Excel
+    wb.save(excel_path)
 
-    table_info.sort(key=lambda x: x[1], reverse=True)
-
-    return table_info
+    # Clean up
+    access_app.CloseCurrentDatabase()
+    access_app.Quit()
 
 # Example usage
-database_path = r'C:\path\to\your\database.accdb'
-tables = get_table_sizes(database_path)
+access_db = r"C:\path\to\your\database.accdb"
+excel_output = r"C:\path\to\output\queries.xlsx"
+export_queries_to_excel(access_db, excel_output)
 
-print(f"{'Table':40} {'Size (MB)':>10} {'Rows':>10}")
-print("-" * 60)
-for table, size, rows in
+print("Export complete!")
