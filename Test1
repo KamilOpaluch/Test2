@@ -1,44 +1,40 @@
-import pyodbc
 import openpyxl
 import win32com.client
+import pythoncom
 
-def get_query_names(access_db_path):
-    conn_str = f"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={access_db_path};"
-    conn = pyodbc.connect(conn_str)
-    cursor = conn.cursor()
-    cursor.execute("SELECT Name FROM MSysObjects WHERE Type=5 AND Flags=0")
-    query_names = [row.Name for row in cursor.fetchall()]
-    conn.close()
-    return query_names
+def export_queries_from_open_access(excel_path):
+    pythoncom.CoInitialize()  # Required for COM threading
 
-def export_queries_to_excel(access_db_path, excel_path):
-    query_names = get_query_names(access_db_path)
+    try:
+        access_app = win32com.client.GetActiveObject("Access.Application")
+    except Exception as e:
+        print("Access is not open or not accessible.")
+        return
 
-    access_app = win32com.client.Dispatch("Access.Application")
-    access_app.OpenCurrentDatabase(access_db_path)
-    access_app.Visible = False  # UI stays hidden
+    try:
+        db = access_app.CurrentDb()
+        queries = db.QueryDefs
 
-    db = access_app.CurrentDb()
-    queries = {q.Name: q.SQL for q in db.QueryDefs if q.Name in query_names}
+        # Prepare Excel workbook
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Queries"
+        ws.append(["Query Name", "SQL Definition"])
 
-    # Excel
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Queries"
-    ws.append(["Query Name", "SQL"])
+        for q in queries:
+            if q.Name.startswith("~") or q.Name.startswith("MSys"):
+                continue
+            try:
+                ws.append([q.Name, q.SQL])
+            except Exception as e:
+                ws.append([q.Name, f"ERROR: {e}"])
 
-    for name in query_names:
-        sql = queries.get(name, "ERROR or not found")
-        ws.append([name, sql])
+        wb.save(excel_path)
+        print(f"Exported queries to {excel_path}")
 
-    wb.save(excel_path)
-
-    access_app.CloseCurrentDatabase()
-    access_app.Quit()
+    except Exception as e:
+        print(f"Error extracting queries: {e}")
 
 # Example usage
-access_db = r"C:\path\to\your\database.accdb"
 excel_out = r"C:\path\to\queries.xlsx"
-export_queries_to_excel(access_db, excel_out)
-
-print("Exported all saved queries to Excel.")
+export_queries_from_open_access(excel_out)
