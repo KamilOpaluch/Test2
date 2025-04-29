@@ -22,12 +22,10 @@ def run_script():
     # Step 1: Use Access DB full connection string
     access_conn = pyodbc.connect(ACCESS_CONN_STR)
 
-    mcc_df = pd.read_sql('SELECT * FROM MCC', access_conn)
-
     mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
     mapping_pnl_ecb_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
     mapping_pnl_ecb_df['Legal_Entity'] = mapping_pnl_ecb_df['Legal_Entity'].replace('CGME', 'CGME ECB')
-    combined_mapping_df = pd.concat([mapping_pnl_df, mapping_pnl_ecb_df], ignore_index=True)
+    mcc_df = pd.concat([mapping_pnl_df, mapping_pnl_ecb_df], ignore_index=True)
 
     # Step 2: Read MCC_Template from Excel INPUT sheet
     excel_path = 'input.xlsx'
@@ -39,13 +37,15 @@ def run_script():
     oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
 
     all_level_10s = tuple(set(mcc_df['LEVEL_10']).union(set(mcc_template_values)))
+    placeholders = ','.join([f':{i+1}' for i in range(len(all_level_10s))])
     query = f'''
         SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_8, LEVEL_4, LEVEL_6
         FROM BUS_HIERARCHY
-        WHERE LEVEL_10 IN ({','.join([':{}'.format(i+1) for i in range(len(all_level_10s))])})
-        AND AS_OF = :date'''
+        WHERE LEVEL_10 IN ({placeholders})
+        AND AS_OF = :{len(all_level_10s) + 1}'''
     cursor = oracle_conn.cursor()
-    cursor.execute(query, *all_level_10s, date=selected_date)
+    params = list(all_level_10s) + [selected_date]
+    cursor.execute(query, params)
     results = cursor.fetchall()
     columns = ['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_8', 'LEVEL_4', 'LEVEL_6']
     oracle_df = pd.DataFrame(results, columns=columns)
@@ -56,7 +56,7 @@ def run_script():
 
     # Step 5: Create INSERT sheet
     insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12']].copy()
-    insert_df['LEGAL_ENTITY'] = selected_entity
+    new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']] = new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']]
 
     def find_desk(row):
         match = old_mcc_df[
@@ -66,8 +66,9 @@ def run_script():
         ]
         return match['LEVEL_12'].values[0] if not match.empty else ''
 
-    new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']] = new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']]
     insert_df['DESK_LEVEL'] = new_mcc_df.apply(find_desk, axis=1)
+    insert_df['LEGAL_ENTITY'] = selected_entity
+    insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'DESK_LEVEL', 'LEGAL_ENTITY']]
 
     # Step 6: Write to Excel (clear all sheets except INPUT)
     with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
