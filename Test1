@@ -62,10 +62,12 @@ def run_script():
     # Step 1: Use Access DB full connection string
     access_conn = pyodbc.connect(ACCESS_CONN_STR)
 
-    mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
-    mapping_pnl_ecb_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
-    mapping_pnl_ecb_df['Legal_Entity'] = mapping_pnl_ecb_df['Legal_Entity'].replace('CGME', 'CGME ECB')
-    mcc_df = pd.concat([mapping_pnl_df, mapping_pnl_ecb_df], ignore_index=True)
+    if selected_entity == 'CGME ECB':
+        mcc_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
+        mcc_df['Legal_Entity'] = mcc_df['Legal_Entity'].replace('CGME', 'CGME ECB')
+    else:
+        mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
+        mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == selected_entity]
 
     access_conn.close()
 
@@ -106,7 +108,12 @@ def run_script():
         return match['DESK_LEVEL'].values[0] if not match.empty else ''
 
     insert_df['DESK_LEVEL'] = insert_df.apply(find_desk, axis=1)
-    insert_df['LEGAL_ENTITY'] = selected_entity
+
+    if selected_entity in ('CGME ECB', 'CGME PRA'):
+        insert_df['LEGAL_ENTITY'] = 'CGME'
+    else:
+        insert_df['LEGAL_ENTITY'] = selected_entity
+
     insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'DESK_LEVEL', 'LEGAL_ENTITY']]
 
     # Step 5: Write to Excel (clear all sheets except INPUT)
