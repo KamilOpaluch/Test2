@@ -7,13 +7,20 @@ import cx_Oracle
 from datetime import datetime
 import os
 
-# Assume the Access database is already open and session is active
+# Assume the Access database is already open using a full connection string
+ACCESS_DB_PATH = r'C:\path\to\CGML_Backtesting v1.accdb'
+ACCESS_CONN_STR = (
+    r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
+    f'DBQ={ACCESS_DB_PATH};'
+    r'PWD=your_password_here;'  # if needed
+)
+
 def run_script():
     selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
     selected_entity = entity_var.get()
 
-    # Step 1: Use existing Access session for DB queries
-    access_conn = pyodbc.connect(r'DSN=CGML_Backtesting_v1')  # Use existing ODBC DSN for opened session
+    # Step 1: Use Access DB full connection string
+    access_conn = pyodbc.connect(ACCESS_CONN_STR)
 
     mcc_df = pd.read_sql('SELECT * FROM MCC', access_conn)
 
