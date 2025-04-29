@@ -27,6 +27,8 @@ def run_script():
     mapping_pnl_ecb_df['Legal_Entity'] = mapping_pnl_ecb_df['Legal_Entity'].replace('CGME', 'CGME ECB')
     mcc_df = pd.concat([mapping_pnl_df, mapping_pnl_ecb_df], ignore_index=True)
 
+    access_conn.close()
+
     # Step 2: Read MCC_Template from Excel INPUT sheet
     excel_path = 'input.xlsx'
     mcc_template_df = pd.read_excel(excel_path, sheet_name='INPUT', usecols=[0])
@@ -50,30 +52,33 @@ def run_script():
     columns = ['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_8', 'LEVEL_4', 'LEVEL_6']
     oracle_df = pd.DataFrame(results, columns=columns)
 
-    # Step 4: Separate NEW and OLD MCC
-    new_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_template_values)].copy()
-    old_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_df['LEVEL_10'])].copy()
+    cursor.close()
+    oracle_conn.close()
+
+    # Step 4: Enrich old_mcc_df with DESK_LEVEL from mcc_df
+    enriched_old_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_df['LEVEL_10'])].copy()
+    enriched_old_mcc_df = pd.merge(enriched_old_mcc_df, mcc_df[['LEVEL_10', 'DESK_LEVEL']], on='LEVEL_10', how='left')
 
     # Step 5: Create INSERT sheet
-    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12']].copy()
-    new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']] = new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']]
+    new_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_template_values)].copy()
+    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8']].copy()
 
     def find_desk(row):
-        match = old_mcc_df[
-            (old_mcc_df['LEVEL_4'] == row['LEVEL_4']) &
-            (old_mcc_df['LEVEL_6'] == row['LEVEL_6']) &
-            (old_mcc_df['LEVEL_8'] == row['LEVEL_8'])
+        match = enriched_old_mcc_df[
+            (enriched_old_mcc_df['LEVEL_4'] == row['LEVEL_4']) &
+            (enriched_old_mcc_df['LEVEL_6'] == row['LEVEL_6']) &
+            (enriched_old_mcc_df['LEVEL_8'] == row['LEVEL_8'])
         ]
-        return match['LEVEL_12'].values[0] if not match.empty else ''
+        return match['DESK_LEVEL'].values[0] if not match.empty else ''
 
-    insert_df['DESK_LEVEL'] = new_mcc_df.apply(find_desk, axis=1)
+    insert_df['DESK_LEVEL'] = insert_df.apply(find_desk, axis=1)
     insert_df['LEGAL_ENTITY'] = selected_entity
     insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'DESK_LEVEL', 'LEGAL_ENTITY']]
 
     # Step 6: Write to Excel (clear all sheets except INPUT)
     with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
         new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
-        old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
+        enriched_old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
         insert_df.to_excel(writer, sheet_name='INSERT', index=False)
 
     print("Process completed successfully.")
