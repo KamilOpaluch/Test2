@@ -7,7 +7,6 @@ import cx_Oracle
 from datetime import datetime
 import os
 
-# Assume the Access database is already open using a full connection string
 ACCESS_DB_PATH = r'C:\path\to\CGML_Backtesting v1.accdb'
 ACCESS_CONN_STR = (
     r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
@@ -18,76 +17,63 @@ ACCESS_CONN_STR = (
 def fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date):
     batch_size = 900
     all_batches = []
-
     for i in range(0, len(level_12_values), batch_size):
         batch = level_12_values[i:i + batch_size]
         placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
         query = f'''
-            SELECT LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
+            SELECT LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8, LEVEL_9
             FROM BUS_HIERARCHY
             WHERE LEVEL_12 IN ({placeholders})
-            AND AS_OF = :{len(batch) + 1}
-        '''
+            AND AS_OF = :{len(batch) + 1}'''
         params = list(batch) + [selected_date]
         cursor.execute(query, params)
-        batch_result = cursor.fetchall()
-        all_batches.extend(batch_result)
-
-    return pd.DataFrame(all_batches, columns=['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8'])
+        all_batches.extend(cursor.fetchall())
+    return pd.DataFrame(all_batches, columns=['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'])
 
 def fetch_oracle_data_by_level_10(cursor, level_10_values, selected_date):
     batch_size = 900
     all_batches = []
-
     for i in range(0, len(level_10_values), batch_size):
         batch = level_10_values[i:i + batch_size]
         placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
         query = f'''
-            SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
+            SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8, LEVEL_9
             FROM BUS_HIERARCHY
             WHERE LEVEL_10 IN ({placeholders})
-            AND AS_OF = :{len(batch) + 1}
-        '''
+            AND AS_OF = :{len(batch) + 1}'''
         params = list(batch) + [selected_date]
         cursor.execute(query, params)
-        batch_result = cursor.fetchall()
-        all_batches.extend(batch_result)
-
-    return pd.DataFrame(all_batches, columns=['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8'])
+        all_batches.extend(cursor.fetchall())
+    return pd.DataFrame(all_batches, columns=['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'])
 
 def run_script():
     selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
     selected_entity = entity_var.get()
 
-    # Step 1: Use Access DB full connection string
     access_conn = pyodbc.connect(ACCESS_CONN_STR)
 
     if selected_entity == 'CGME ECB':
         mcc_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
-        mcc_df['Legal_Entity'] = mcc_df['Legal_Entity'].replace('CGME', 'CGME ECB')
+    elif selected_entity == 'CGME PRA':
+        mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
+        mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == 'CGME']
     else:
         mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
         mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == selected_entity]
 
     access_conn.close()
 
-    # Step 2: Read MCC_Template from Excel INPUT sheet
     excel_path = 'input.xlsx'
     mcc_template_df = pd.read_excel(excel_path, sheet_name='INPUT', usecols=[0])
     mcc_template_values = tuple(mcc_template_df.iloc[:, 0].dropna().unique())
 
-    # Step 3: Query Oracle
     dsn = cx_Oracle.makedsn("your_host", 1521, sid="your_sid")
     oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
     cursor = oracle_conn.cursor()
 
-    # Prefix LEVEL_12 values with 'S2'
     level_12_values = ['S2' + str(val) for val in mcc_df['LEVEL_12'].dropna().unique()]
     oracle_old_df = fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date)
-
-    # Remove 'S2' when merging back
     oracle_old_df['LEVEL_12'] = oracle_old_df['LEVEL_12'].str[2:]
-
     old_mcc_df = pd.merge(mcc_df, oracle_old_df, on='LEVEL_12', how='left')
 
     new_level_10s = list(mcc_template_values)
@@ -96,27 +82,19 @@ def run_script():
     cursor.close()
     oracle_conn.close()
 
-    # Step 4: Create INSERT sheet
-    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8']].copy()
+    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9']].copy()
 
     def find_desk(row):
-        match = old_mcc_df[
-            (old_mcc_df['LEVEL_4'] == row['LEVEL_4']) &
-            (old_mcc_df['LEVEL_6'] == row['LEVEL_6']) &
-            (old_mcc_df['LEVEL_8'] == row['LEVEL_8'])
-        ]
-        return match['DESK_LEVEL'].values[0] if not match.empty else ''
+        for level in ['LEVEL_9', 'LEVEL_8', 'LEVEL_6', 'LEVEL_4']:
+            match = old_mcc_df[old_mcc_df[level] == row[level]]
+            if not match.empty:
+                return match['DESK_LEVEL'].values[0]
+        return ''
 
     insert_df['DESK_LEVEL'] = insert_df.apply(find_desk, axis=1)
+    insert_df['LEGAL_ENTITY'] = 'CGME' if selected_entity == 'CGME PRA' else selected_entity
+    insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9', 'DESK_LEVEL', 'LEGAL_ENTITY']]
 
-    if selected_entity in ('CGME ECB', 'CGME PRA'):
-        insert_df['LEGAL_ENTITY'] = 'CGME'
-    else:
-        insert_df['LEGAL_ENTITY'] = selected_entity
-
-    insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'DESK_LEVEL', 'LEGAL_ENTITY']]
-
-    # Step 5: Write to Excel (clear all sheets except INPUT)
     with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
         new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
         old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
@@ -124,23 +102,19 @@ def run_script():
 
     print("Process completed successfully.")
 
-# GUI
 root = tk.Tk()
 root.title("MCC Data Processor")
 
-# Date picker
 tk.Label(root, text="Select Date:").grid(row=0, column=0, padx=10, pady=5)
 calendar = DateEntry(root, date_pattern='dd-mm-yyyy')
 calendar.grid(row=0, column=1, padx=10, pady=5)
 
-# Dropdown
 tk.Label(root, text="Select Entity:").grid(row=1, column=0, padx=10, pady=5)
 entity_var = tk.StringVar()
 dropdown = ttk.Combobox(root, textvariable=entity_var)
 dropdown['values'] = ('CEP', 'CGML', 'CGME PRA', 'CGME ECB')
 dropdown.grid(row=1, column=1, padx=10, pady=5)
 
-# Run button
 run_button = tk.Button(root, text="Run", command=run_script)
 run_button.grid(row=2, column=0, columnspan=2, pady=10)
 
