@@ -79,8 +79,12 @@ def run_script():
     oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
     cursor = oracle_conn.cursor()
 
-    level_12_values = list(mcc_df['LEVEL_12'].dropna().unique())
+    # Prefix LEVEL_12 values with 'S2'
+    level_12_values = ['S2' + str(val) for val in mcc_df['LEVEL_12'].dropna().unique()]
     oracle_old_df = fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date)
+
+    # Remove 'S2' when merging back
+    oracle_old_df['LEVEL_12'] = oracle_old_df['LEVEL_12'].str[2:]
 
     old_mcc_df = pd.merge(mcc_df, oracle_old_df, on='LEVEL_12', how='left')
 
