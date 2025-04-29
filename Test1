@@ -15,6 +15,46 @@ ACCESS_CONN_STR = (
     r'PWD=your_password_here;'  # if needed
 )
 
+def fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date):
+    batch_size = 900
+    all_batches = []
+
+    for i in range(0, len(level_12_values), batch_size):
+        batch = level_12_values[i:i + batch_size]
+        placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
+        query = f'''
+            SELECT LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
+            FROM BUS_HIERARCHY
+            WHERE LEVEL_12 IN ({placeholders})
+            AND AS_OF = :{len(batch) + 1}
+        '''
+        params = list(batch) + [selected_date]
+        cursor.execute(query, params)
+        batch_result = cursor.fetchall()
+        all_batches.extend(batch_result)
+
+    return pd.DataFrame(all_batches, columns=['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8'])
+
+def fetch_oracle_data_by_level_10(cursor, level_10_values, selected_date):
+    batch_size = 900
+    all_batches = []
+
+    for i in range(0, len(level_10_values), batch_size):
+        batch = level_10_values[i:i + batch_size]
+        placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
+        query = f'''
+            SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
+            FROM BUS_HIERARCHY
+            WHERE LEVEL_10 IN ({placeholders})
+            AND AS_OF = :{len(batch) + 1}
+        '''
+        params = list(batch) + [selected_date]
+        cursor.execute(query, params)
+        batch_result = cursor.fetchall()
+        all_batches.extend(batch_result)
+
+    return pd.DataFrame(all_batches, columns=['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8'])
+
 def run_script():
     selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
     selected_entity = entity_var.get()
@@ -34,47 +74,23 @@ def run_script():
     mcc_template_df = pd.read_excel(excel_path, sheet_name='INPUT', usecols=[0])
     mcc_template_values = tuple(mcc_template_df.iloc[:, 0].dropna().unique())
 
-    # Step 3: Query Oracle for LEVEL_12 values from Access to get LEVEL_4,6,8
+    # Step 3: Query Oracle
     dsn = cx_Oracle.makedsn("your_host", 1521, sid="your_sid")
     oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
-
-    level_12_values = tuple(mcc_df['LEVEL_12'].dropna().unique())
-    placeholders = ','.join([f':{i+1}' for i in range(len(level_12_values))])
-    query_old = f'''
-        SELECT LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
-        FROM BUS_HIERARCHY
-        WHERE LEVEL_12 IN ({placeholders})
-        AND AS_OF = :{len(level_12_values) + 1}'''
-
     cursor = oracle_conn.cursor()
-    params_old = list(level_12_values) + [selected_date]
-    cursor.execute(query_old, params_old)
-    results_old = cursor.fetchall()
-    columns_old = ['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8']
-    oracle_old_df = pd.DataFrame(results_old, columns=columns_old)
 
-    # Merge old MCC with oracle level info
+    level_12_values = list(mcc_df['LEVEL_12'].dropna().unique())
+    oracle_old_df = fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date)
+
     old_mcc_df = pd.merge(mcc_df, oracle_old_df, on='LEVEL_12', how='left')
 
-    # Step 4: Query Oracle for new MCC values based on template LEVEL_10
-    new_level_10s = tuple(mcc_template_values)
-    placeholders_new = ','.join([f':{i+1}' for i in range(len(new_level_10s))])
-    query_new = f'''
-        SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8
-        FROM BUS_HIERARCHY
-        WHERE LEVEL_10 IN ({placeholders_new})
-        AND AS_OF = :{len(new_level_10s) + 1}'''
-
-    params_new = list(new_level_10s) + [selected_date]
-    cursor.execute(query_new, params_new)
-    results_new = cursor.fetchall()
-    columns_new = ['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8']
-    new_mcc_df = pd.DataFrame(results_new, columns=columns_new)
+    new_level_10s = list(mcc_template_values)
+    new_mcc_df = fetch_oracle_data_by_level_10(cursor, new_level_10s, selected_date)
 
     cursor.close()
     oracle_conn.close()
 
-    # Step 5: Create INSERT sheet by matching on LEVEL_4, 6, 8 and extracting DESK_LEVEL from old_mcc_df
+    # Step 4: Create INSERT sheet
     insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8']].copy()
 
     def find_desk(row):
@@ -89,7 +105,7 @@ def run_script():
     insert_df['LEGAL_ENTITY'] = selected_entity
     insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'DESK_LEVEL', 'LEGAL_ENTITY']]
 
-    # Step 6: Write to Excel (clear all sheets except INPUT)
+    # Step 5: Write to Excel (clear all sheets except INPUT)
     with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
         new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
         old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
