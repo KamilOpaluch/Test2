@@ -1,44 +1,88 @@
+import tkinter as tk
+from tkinter import ttk
+from tkcalendar import DateEntry
+import pandas as pd
 import pyodbc
-import openpyxl
-import win32com.client
+import cx_Oracle
+from datetime import datetime
+import os
 
-def get_query_names(access_db_path):
-    conn_str = f"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={access_db_path};"
-    conn = pyodbc.connect(conn_str)
-    cursor = conn.cursor()
-    cursor.execute("SELECT Name FROM MSysObjects WHERE Type=5 AND Flags=0")
-    query_names = [row.Name for row in cursor.fetchall()]
-    conn.close()
-    return query_names
+# -------- GUI COMPONENT --------
+def run_script():
+    selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
+    selected_entity = entity_var.get()
 
-def export_queries_to_excel(access_db_path, excel_path):
-    query_names = get_query_names(access_db_path)
+    # Step 1: Read from Access DB
+    access_conn_str = r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=CGML_Backtesting.accdb;'
+    access_query = 'SELECT * FROM MCC'
+    mcc_df = pd.read_sql(access_query, pyodbc.connect(access_conn_str))
 
-    access_app = win32com.client.Dispatch("Access.Application")
-    access_app.OpenCurrentDatabase(access_db_path)
-    access_app.Visible = False  # UI stays hidden
+    # Step 2: Read MCC_Template from Excel INPUT sheet
+    excel_path = 'input.xlsx'
+    mcc_template_df = pd.read_excel(excel_path, sheet_name='INPUT', usecols=[0])
+    mcc_template_values = tuple(mcc_template_df.iloc[:, 0].dropna().unique())
 
-    db = access_app.CurrentDb()
-    queries = {q.Name: q.SQL for q in db.QueryDefs if q.Name in query_names}
+    # Step 3 & 4: Query Oracle for matching LEVEL_10 from both MCC & Template
+    dsn = cx_Oracle.makedsn("your_host", 1521, sid="your_sid")
+    oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
 
-    # Excel
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Queries"
-    ws.append(["Query Name", "SQL"])
+    all_level_10s = tuple(set(mcc_df['LEVEL_10']).union(set(mcc_template_values)))
+    query = f'''
+        SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_8, LEVEL_4, LEVEL_6
+        FROM BUS_HIERARCHY
+        WHERE LEVEL_10 IN ({','.join([':{}'.format(i+1) for i in range(len(all_level_10s))])})
+        AND AS_OF = :date'''
+    cursor = oracle_conn.cursor()
+    cursor.execute(query, *all_level_10s, date=selected_date)
+    results = cursor.fetchall()
+    columns = ['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_8', 'LEVEL_4', 'LEVEL_6']
+    oracle_df = pd.DataFrame(results, columns=columns)
 
-    for name in query_names:
-        sql = queries.get(name, "ERROR or not found")
-        ws.append([name, sql])
+    # Step 4: Separate NEW and OLD MCC
+    new_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_template_values)].copy()
+    old_mcc_df = oracle_df[oracle_df['LEVEL_10'].isin(mcc_df['LEVEL_10'])].copy()
 
-    wb.save(excel_path)
+    # Step 5: Create INSERT sheet
+    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12']].copy()
+    insert_df['LEGAL_ENTITY'] = selected_entity
 
-    access_app.CloseCurrentDatabase()
-    access_app.Quit()
+    def find_desk(row):
+        match = old_mcc_df[
+            (old_mcc_df['LEVEL_4'] == row['LEVEL_4']) &
+            (old_mcc_df['LEVEL_6'] == row['LEVEL_6']) &
+            (old_mcc_df['LEVEL_8'] == row['LEVEL_8'])
+        ]
+        return match['LEVEL_12'].values[0] if not match.empty else ''
 
-# Example usage
-access_db = r"C:\path\to\your\database.accdb"
-excel_out = r"C:\path\to\queries.xlsx"
-export_queries_to_excel(access_db, excel_out)
+    new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']] = new_mcc_df[['LEVEL_4', 'LEVEL_6', 'LEVEL_8']]
+    insert_df['DESK_LEVEL'] = new_mcc_df.apply(find_desk, axis=1)
 
-print("Exported all saved queries to Excel.")
+    # Step 6: Write to Excel (clear all sheets except INPUT)
+    with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
+        new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
+        old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
+        insert_df.to_excel(writer, sheet_name='INSERT', index=False)
+
+    print("Process completed successfully.")
+
+# GUI
+root = tk.Tk()
+root.title("MCC Data Processor")
+
+# Date picker
+tk.Label(root, text="Select Date:").grid(row=0, column=0, padx=10, pady=5)
+calendar = DateEntry(root, date_pattern='dd-mm-yyyy')
+calendar.grid(row=0, column=1, padx=10, pady=5)
+
+# Dropdown
+tk.Label(root, text="Select Entity:").grid(row=1, column=0, padx=10, pady=5)
+entity_var = tk.StringVar()
+dropdown = ttk.Combobox(root, textvariable=entity_var)
+dropdown['values'] = ('CEP', 'CGML', 'CGME PRA', 'CGME ECB')
+dropdown.grid(row=1, column=1, padx=10, pady=5)
+
+# Run button
+run_button = tk.Button(root, text="Run", command=run_script)
+run_button.grid(row=2, column=0, columnspan=2, pady=10)
+
+root.mainloop()
