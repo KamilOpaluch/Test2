@@ -1,121 +1,163 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from tkcalendar import DateEntry
 import pandas as pd
 import pyodbc
 import cx_Oracle
+import threading
 from datetime import datetime
 import os
 
-ACCESS_DB_PATH = r'C:\path\to\CGML_Backtesting v1.accdb'
+def load_config(config_path='config.txt'):
+    config = {}
+    with open(config_path, 'r') as f:
+        for line in f:
+            key, value = line.strip().split('=', 1)
+            config[key] = value
+    return config
+
+config = load_config()
+
+ACCESS_DB_PATH = config['ACCESS_DB_PATH']
+EXCEL_FILE_PATH = config['EXCEL_FILE_PATH']
+ORACLE_USER = config['ORACLE_USER']
+ORACLE_PASSWORD = config['ORACLE_PASSWORD']
+ORACLE_HOST = config['ORACLE_HOST']
+ORACLE_PORT = config['ORACLE_PORT']
+ORACLE_SERVICE = config['ORACLE_SERVICE']
+
 ACCESS_CONN_STR = (
     r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
     f'DBQ={ACCESS_DB_PATH};'
-    r'PWD=your_password_here;'  # if needed
 )
 
-def fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date):
-    batch_size = 900
-    all_batches = []
-    for i in range(0, len(level_12_values), batch_size):
-        batch = level_12_values[i:i + batch_size]
-        placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
-        query = f'''
-            SELECT LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8, LEVEL_9
-            FROM BUS_HIERARCHY
-            WHERE LEVEL_12 IN ({placeholders})
-            AND AS_OF = :{len(batch) + 1}'''
-        params = list(batch) + [selected_date]
-        cursor.execute(query, params)
-        all_batches.extend(cursor.fetchall())
-    return pd.DataFrame(all_batches, columns=['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'])
+steps_done = {}
 
-def fetch_oracle_data_by_level_10(cursor, level_10_values, selected_date):
+def fetch_oracle_data(cursor, columns, where_column, values, selected_date):
     batch_size = 900
     all_batches = []
-    for i in range(0, len(level_10_values), batch_size):
-        batch = level_10_values[i:i + batch_size]
+    for i in range(0, len(values), batch_size):
+        batch = values[i:i + batch_size]
         placeholders = ','.join([f':{i+1}' for i in range(len(batch))])
         query = f'''
-            SELECT LEVEL_10, GOC_ID, LEVEL_12, LEVEL_4, LEVEL_6, LEVEL_8, LEVEL_9
+            SELECT {', '.join(columns)}
             FROM BUS_HIERARCHY
-            WHERE LEVEL_10 IN ({placeholders})
+            WHERE {where_column} IN ({placeholders})
             AND AS_OF = :{len(batch) + 1}'''
         params = list(batch) + [selected_date]
         cursor.execute(query, params)
         all_batches.extend(cursor.fetchall())
-    return pd.DataFrame(all_batches, columns=['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'])
+    return pd.DataFrame(all_batches, columns=columns)
+
+def update_checkbox(step):
+    steps_done[step].config(state='normal')
+    steps_done[step].select()
 
 def run_script():
-    selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
-    selected_entity = entity_var.get()
+    try:
+        selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
+        selected_entity = entity_var.get()
 
-    access_conn = pyodbc.connect(ACCESS_CONN_STR)
+        update_checkbox('db_open')
+        access_conn = pyodbc.connect(ACCESS_CONN_STR)
 
-    if selected_entity == 'CGME ECB':
-        mcc_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
-    elif selected_entity == 'CGME PRA':
-        mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
-        mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == 'CGME']
-    else:
-        mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
-        mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == selected_entity]
+        if selected_entity == 'CGME ECB':
+            mcc_df = pd.read_sql('SELECT * FROM Mapping_PnL_ECB', access_conn)
+        elif selected_entity == 'CGME PRA':
+            mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
+            mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == 'CGME']
+        else:
+            mapping_pnl_df = pd.read_sql('SELECT * FROM Mapping_PnL', access_conn)
+            mcc_df = mapping_pnl_df[mapping_pnl_df['Legal_Entity'] == selected_entity]
 
-    access_conn.close()
+        access_conn.close()
 
-    excel_path = 'input.xlsx'
-    mcc_template_df = pd.read_excel(excel_path, sheet_name='INPUT', usecols=[0])
-    mcc_template_values = tuple(mcc_template_df.iloc[:, 0].dropna().unique())
+        update_checkbox('access_loaded')
 
-    dsn = cx_Oracle.makedsn("your_host", 1521, sid="your_sid")
-    oracle_conn = cx_Oracle.connect(user="your_user", password="your_pass", dsn=dsn)
-    cursor = oracle_conn.cursor()
+        mcc_template_df = pd.read_excel(EXCEL_FILE_PATH, sheet_name='INPUT', usecols=[0])
+        mcc_template_values = tuple(mcc_template_df.iloc[:, 0].dropna().unique())
 
-    level_12_values = ['S2' + str(val) for val in mcc_df['LEVEL_12'].dropna().unique()]
-    oracle_old_df = fetch_oracle_data_by_level_12(cursor, level_12_values, selected_date)
-    oracle_old_df['LEVEL_12'] = oracle_old_df['LEVEL_12'].str[2:]
-    old_mcc_df = pd.merge(mcc_df, oracle_old_df, on='LEVEL_12', how='left')
+        update_checkbox('excel_loaded')
 
-    new_level_10s = list(mcc_template_values)
-    new_mcc_df = fetch_oracle_data_by_level_10(cursor, new_level_10s, selected_date)
+        dsn = cx_Oracle.makedsn(ORACLE_HOST, ORACLE_PORT, service_name=ORACLE_SERVICE)
+        oracle_conn = cx_Oracle.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=dsn)
+        cursor = oracle_conn.cursor()
 
-    cursor.close()
-    oracle_conn.close()
+        level_12_values = ['S2' + str(val) for val in mcc_df['LEVEL_12'].dropna().unique()]
+        oracle_old_df = fetch_oracle_data(cursor, ['LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'], 'LEVEL_12', level_12_values, selected_date)
+        oracle_old_df['LEVEL_12'] = oracle_old_df['LEVEL_12'].str[2:]
+        old_mcc_df = pd.merge(mcc_df, oracle_old_df, on='LEVEL_12', how='left')
 
-    insert_df = new_mcc_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9']].copy()
+        new_mcc_df = fetch_oracle_data(cursor, ['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9'], 'LEVEL_10', list(mcc_template_values), selected_date)
 
-    def find_desk(row):
-        for level in ['LEVEL_9', 'LEVEL_8', 'LEVEL_6', 'LEVEL_4']:
-            match = old_mcc_df[old_mcc_df[level] == row[level]]
-            if not match.empty:
-                return match['DESK_LEVEL'].values[0]
-        return ''
+        cursor.close()
+        oracle_conn.close()
 
-    insert_df['DESK_LEVEL'] = insert_df.apply(find_desk, axis=1)
-    insert_df['LEGAL_ENTITY'] = 'CGME' if selected_entity == 'CGME PRA' else selected_entity
-    insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9', 'DESK_LEVEL', 'LEGAL_ENTITY']]
+        update_checkbox('oracle_fetched')
 
-    with pd.ExcelWriter(excel_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
-        new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
-        old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
-        insert_df.to_excel(writer, sheet_name='INSERT', index=False)
+        insert_df = new_mcc_df.copy()
 
-    print("Process completed successfully.")
+        def find_desk(row):
+            for level in ['LEVEL_9', 'LEVEL_8', 'LEVEL_6', 'LEVEL_4']:
+                match = old_mcc_df[old_mcc_df[level] == row[level]]
+                if not match.empty:
+                    return match['DESK_LEVEL'].values[0], level
+            return '', ''
 
+        results = insert_df.apply(find_desk, axis=1)
+        insert_df['DESK_LEVEL'] = results.apply(lambda x: x[0])
+        insert_df['MATCHED_ON_LEVEL'] = results.apply(lambda x: x[1])
+        insert_df['LEGAL_ENTITY'] = 'CGME' if selected_entity == 'CGME PRA' else selected_entity
+
+        insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9', 'DESK_LEVEL', 'MATCHED_ON_LEVEL', 'LEGAL_ENTITY']]
+
+        with pd.ExcelWriter(EXCEL_FILE_PATH, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
+            new_mcc_df.to_excel(writer, sheet_name='NEW_MCC', index=False)
+            old_mcc_df.to_excel(writer, sheet_name='OLD_MCC', index=False)
+            insert_df.to_excel(writer, sheet_name='INSERT', index=False)
+
+        update_checkbox('saved_excel')
+
+        messagebox.showinfo("Success", "Process completed successfully.")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def threaded_run():
+    threading.Thread(target=run_script, daemon=True).start()
+
+# GUI Setup
 root = tk.Tk()
 root.title("MCC Data Processor")
+root.configure(bg='#2e2e2e')
 
-tk.Label(root, text="Select Date:").grid(row=0, column=0, padx=10, pady=5)
+# Show startup popups
+root.after(100, lambda: messagebox.showinfo("Info", "Please make sure Access database is opened."))
+root.after(200, lambda: messagebox.showinfo("Reminder", "Update MCC_Template.xlsx INPUT sheet before running."))
+
+style = ttk.Style()
+style.theme_use('clam')
+style.configure('.', background='#2e2e2e', foreground='white', fieldbackground='#2e2e2e')
+
+tk.Label(root, text="Select Date:", bg='#2e2e2e', fg='white').grid(row=0, column=0, padx=10, pady=5)
 calendar = DateEntry(root, date_pattern='dd-mm-yyyy')
 calendar.grid(row=0, column=1, padx=10, pady=5)
 
-tk.Label(root, text="Select Entity:").grid(row=1, column=0, padx=10, pady=5)
+tk.Label(root, text="Select Entity:", bg='#2e2e2e', fg='white').grid(row=1, column=0, padx=10, pady=5)
 entity_var = tk.StringVar()
 dropdown = ttk.Combobox(root, textvariable=entity_var)
 dropdown['values'] = ('CEP', 'CGML', 'CGME PRA', 'CGME ECB')
 dropdown.grid(row=1, column=1, padx=10, pady=5)
 
-run_button = tk.Button(root, text="Run", command=run_script)
-run_button.grid(row=2, column=0, columnspan=2, pady=10)
+# Checklist for processing steps
+steps = ['db_open', 'access_loaded', 'excel_loaded', 'oracle_fetched', 'saved_excel']
+for idx, step in enumerate(steps, start=2):
+    var = tk.BooleanVar()
+    cb = ttk.Checkbutton(root, text=step.replace('_', ' ').capitalize(), variable=var)
+    cb.grid(row=idx, column=0, columnspan=2, sticky='w', padx=10)
+    cb.config(state='disabled')
+    steps_done[step] = cb
+
+run_button = tk.Button(root, text="Run", command=threaded_run, bg='#4caf50', fg='white')
+run_button.grid(row=7, column=0, columnspan=2, pady=10)
 
 root.mainloop()
