@@ -8,7 +8,9 @@ import threading
 import os
 import subprocess
 
-def load_config(config_path='config.txt'):
+def load_config(config_filename='config.txt'):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, config_filename)
     config = {}
     with open(config_path, 'r') as f:
         for line in f:
@@ -17,11 +19,11 @@ def load_config(config_path='config.txt'):
                 config[key] = value
     return config
 
-# Load configuration
 config = load_config()
 
 ACCESS_DB_PATH = config['ACCESS_DB_PATH']
-EXCEL_FILE_PATH = config['EXCEL_FILE_PATH']
+EXCEL_FILE_NAME = config['EXCEL_FILE_PATH']
+EXCEL_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), EXCEL_FILE_NAME)
 ORACLE_USER = config['ORACLE_USER']
 ORACLE_PASSWORD = config['ORACLE_PASSWORD']
 ORACLE_HOST = config['ORACLE_HOST']
@@ -36,11 +38,13 @@ ACCESS_CONN_STR = (
 steps_done = {}
 spinner_running = False
 
+
 def log_debug(message):
     debug_console.config(state='normal')
     debug_console.insert(tk.END, f"{message}\n")
     debug_console.see(tk.END)
     debug_console.config(state='disabled')
+
 
 def fetch_oracle_data(cursor, columns, where_column, values, selected_date):
     batch_size = 900
@@ -52,38 +56,43 @@ def fetch_oracle_data(cursor, columns, where_column, values, selected_date):
             SELECT {', '.join(columns)}
             FROM BUS_HIERARCHY
             WHERE {where_column} IN ({placeholders})
-            AND AS_OF = :{len(batch) + 1}
-        '''
+            AND AS_OF = :{len(batch) + 1}'''
         params = list(batch) + [selected_date]
         cursor.execute(query, params)
         all_batches.extend(cursor.fetchall())
     return pd.DataFrame(all_batches, columns=columns)
 
+
 def update_checkbox(step):
-    steps_done[step].config(state='normal')
-    steps_done[step].select()
+    steps_done[step][0].set(True)
+
 
 def start_spinner():
     global spinner_running
     spinner_running = True
     rotate_spinner()
 
+
 def stop_spinner():
     global spinner_running
     spinner_running = False
 
+
 def rotate_spinner():
     if spinner_running:
         current = spinner_label['text']
-        next_frame = {'|':'/','/':'-','-':'\\','\\':'|'}[current]
+        next_frame = {'|': '/', '/': '-', '-': '\\', '\\': '|'}[current]
         spinner_label.config(text=next_frame)
         root.after(100, rotate_spinner)
 
+
 def open_excel_template():
     try:
-        subprocess.Popen(['start', EXCEL_FILE_PATH], shell=True)
+        excel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config['EXCEL_FILE_PATH'])
+        subprocess.Popen(['start', excel_path], shell=True)
     except Exception as e:
         messagebox.showerror("Error opening file", str(e))
+
 
 def run_script():
     try:
@@ -141,11 +150,7 @@ def run_script():
         results = insert_df.apply(find_desk, axis=1)
         insert_df['DESK_LEVEL'] = results.apply(lambda x: x[0])
         insert_df['MATCHED_ON_LEVEL'] = results.apply(lambda x: x[1])
-
-        # Add LEVEL12_EXISTS column
         insert_df['LEVEL12_EXISTS'] = insert_df['LEVEL_12'].isin(old_mcc_df['LEVEL_12'])
-
-        # Force consistent LEGAL_ENTITY value
         insert_df['LEGAL_ENTITY'] = 'CGME' if selected_entity == 'CGME PRA' else selected_entity
 
         insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9', 'DESK_LEVEL', 'MATCHED_ON_LEVEL', 'LEVEL12_EXISTS', 'LEGAL_ENTITY']]
@@ -157,7 +162,6 @@ def run_script():
 
         update_checkbox('saved_excel')
         log_debug("Saved Excel file successfully.")
-
         messagebox.showinfo("Success", "Process completed successfully.")
 
     except Exception as e:
@@ -166,10 +170,11 @@ def run_script():
     finally:
         stop_spinner()
 
+
 def threaded_run():
     threading.Thread(target=run_script, daemon=True).start()
 
-# --- GUI ---
+# GUI Setup
 root = tk.Tk()
 root.title("MCC Data Processor")
 root.configure(bg='#2e2e2e')
@@ -179,8 +184,10 @@ root.after(200, lambda: messagebox.showinfo("Reminder", "Update MCC_Template.xls
 
 style = ttk.Style()
 style.theme_use('clam')
-style.configure('.', background='#2e2e2e', foreground='white', fieldbackground='#2e2e2e')
+style.configure('.', background='#2e2e2e', foreground='white', fieldbackground='#3e3e3e', selectbackground='#4caf50')
+style.configure('TCheckbutton', background='#2e2e2e', foreground='white')
 
+# UI Elements
 tk.Label(root, text="Select Date:", bg='#2e2e2e', fg='white').grid(row=0, column=0, padx=10, pady=5)
 calendar = DateEntry(root, date_pattern='dd-mm-yyyy')
 calendar.grid(row=0, column=1, padx=10, pady=5)
@@ -191,15 +198,16 @@ dropdown = ttk.Combobox(root, textvariable=entity_var)
 dropdown['values'] = ('CEP', 'CGML', 'CGME PRA', 'CGME ECB')
 dropdown.grid(row=1, column=1, padx=10, pady=5)
 
+# Checklist
 steps = ['db_open', 'access_loaded', 'excel_loaded', 'oracle_fetched', 'saved_excel']
 for idx, step in enumerate(steps, start=2):
     var = tk.BooleanVar()
     cb = ttk.Checkbutton(root, text=step.replace('_', ' ').capitalize(), variable=var)
     cb.grid(row=idx, column=0, sticky='w', padx=10)
     cb.config(state='disabled')
-    steps_done[step] = cb
+    steps_done[step] = (var, cb)
 
-spinner_label = tk.Label(root, text='|', font=("Arial", 20), bg='#2e2e2e', fg='white')
+spinner_label = tk.Label(root, text='|', font=("Arial", 20), bg='#2e2e2e', fg='cyan')
 spinner_label.grid(row=2, column=1, sticky='e')
 
 run_button = tk.Button(root, text="Run", command=threaded_run, bg='#4caf50', fg='white')
