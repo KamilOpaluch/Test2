@@ -8,6 +8,7 @@ import threading
 import os
 import subprocess
 
+# --- Configuration ---
 def load_config(config_filename='config.txt'):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(script_dir, config_filename)
@@ -22,7 +23,6 @@ def load_config(config_filename='config.txt'):
 config = load_config()
 
 ACCESS_DB_PATH = config['ACCESS_DB_PATH']
-EXCEL_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MCC_Template.xlsx')
 ORACLE_USER = config['ORACLE_USER']
 ORACLE_PASSWORD = config['ORACLE_PASSWORD']
 ORACLE_HOST = config['ORACLE_HOST']
@@ -34,16 +34,17 @@ ACCESS_CONN_STR = (
     f'DBQ={ACCESS_DB_PATH};'
 )
 
+EXCEL_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MCC_Template.xlsx')
+
 steps_done = {}
 spinner_running = False
 
-
+# --- Utility Functions ---
 def log_debug(message):
     debug_console.config(state='normal')
     debug_console.insert(tk.END, f"{message}\n")
     debug_console.see(tk.END)
     debug_console.config(state='disabled')
-
 
 def fetch_oracle_data(cursor, columns, where_column, values, selected_date):
     batch_size = 900
@@ -61,21 +62,24 @@ def fetch_oracle_data(cursor, columns, where_column, values, selected_date):
         all_batches.extend(cursor.fetchall())
     return pd.DataFrame(all_batches, columns=columns)
 
-
 def update_checkbox(step):
     steps_done[step][0].set(True)
 
+def clear_checkboxes_and_log():
+    for var, _ in steps_done.values():
+        var.set(False)
+    debug_console.config(state='normal')
+    debug_console.delete('1.0', tk.END)
+    debug_console.config(state='disabled')
 
 def start_spinner():
     global spinner_running
     spinner_running = True
     rotate_spinner()
 
-
 def stop_spinner():
     global spinner_running
     spinner_running = False
-
 
 def rotate_spinner():
     if spinner_running:
@@ -84,16 +88,16 @@ def rotate_spinner():
         spinner_label.config(text=next_frame)
         root.after(100, rotate_spinner)
 
-
 def open_excel_template():
     try:
         subprocess.Popen(['start', EXCEL_FILE_PATH], shell=True)
     except Exception as e:
         messagebox.showerror("Error opening file", str(e))
-
+        log_debug(f"Error opening Excel: {str(e)}")
 
 def run_script():
     try:
+        clear_checkboxes_and_log()
         start_spinner()
         log_debug("Starting processing...")
         selected_date = calendar.get_date().strftime('%d-%b-%y').upper()
@@ -172,50 +176,64 @@ def run_script():
 def threaded_run():
     threading.Thread(target=run_script, daemon=True).start()
 
-# GUI Setup
+# --- GUI ---
 root = tk.Tk()
 root.title("MCC Data Processor")
 root.configure(bg='#2e2e2e')
 
-root.after(100, lambda: messagebox.showinfo("Info", "Make sure Access database is open."))
-root.after(200, lambda: messagebox.showinfo("Reminder", "Update MCC_Template.xlsx INPUT sheet before running."))
+messagebox.showinfo("Startup Info", "Ensure Access database is open.\nUpdate INPUT sheet in MCC_Template.xlsx before running.")
 
 style = ttk.Style()
 style.theme_use('clam')
-style.configure('.', background='#2e2e2e', foreground='white', fieldbackground='#3e3e3e', selectbackground='#4caf50')
+style.configure('.', background='#2e2e2e', foreground='white', fieldbackground='#3e3e3e')
 style.configure('TCheckbutton', background='#2e2e2e', foreground='white')
 
-# UI Elements
-tk.Label(root, text="Select Date:", bg='#2e2e2e', fg='white').grid(row=0, column=0, padx=10, pady=5)
-calendar = DateEntry(root, date_pattern='dd-mm-yyyy')
-calendar.grid(row=0, column=1, padx=10, pady=5)
+frame_top = tk.Frame(root, bg='#2e2e2e')
+frame_top.pack(pady=10)
 
-tk.Label(root, text="Select Entity:", bg='#2e2e2e', fg='white').grid(row=1, column=0, padx=10, pady=5)
+frame_buttons = tk.Frame(root, bg='#2e2e2e')
+frame_buttons.pack(pady=5)
+
+frame_checklist = tk.Frame(root, bg='#2e2e2e')
+frame_checklist.pack(pady=5)
+
+frame_console = tk.Frame(root, bg='#2e2e2e')
+frame_console.pack(padx=10, pady=10)
+
+# Top Section
+calendar_label = tk.Label(frame_top, text="Select Date:", bg='#2e2e2e', fg='white')
+calendar_label.grid(row=0, column=0, padx=5)
+calendar = DateEntry(frame_top, date_pattern='dd-mm-yyyy')
+calendar.grid(row=0, column=1, padx=5)
+
+entity_label = tk.Label(frame_top, text="Select Entity:", bg='#2e2e2e', fg='white')
+entity_label.grid(row=0, column=2, padx=5)
 entity_var = tk.StringVar()
-dropdown = ttk.Combobox(root, textvariable=entity_var)
+dropdown = ttk.Combobox(frame_top, textvariable=entity_var)
 dropdown['values'] = ('CEP', 'CGML', 'CGME PRA', 'CGME ECB')
-dropdown.grid(row=1, column=1, padx=10, pady=5)
+dropdown.grid(row=0, column=3, padx=5)
+
+# Buttons and Spinner
+run_button = tk.Button(frame_buttons, text="Run", command=threaded_run, bg='#4caf50', fg='white')
+run_button.grid(row=0, column=0, padx=5)
+
+spinner_label = tk.Label(frame_buttons, text='|', font=("Arial", 20), bg='#2e2e2e', fg='cyan')
+spinner_label.grid(row=0, column=1, padx=10)
+
+open_excel_button = tk.Button(frame_buttons, text="Open MCC Template", command=open_excel_template, bg='#2196f3', fg='white')
+open_excel_button.grid(row=0, column=2, padx=5)
 
 # Checklist
 steps = ['db_open', 'access_loaded', 'excel_loaded', 'oracle_fetched', 'saved_excel']
-for idx, step in enumerate(steps, start=2):
+for idx, step in enumerate(steps):
     var = tk.BooleanVar()
-    cb = ttk.Checkbutton(root, text=step.replace('_', ' ').capitalize(), variable=var)
+    cb = ttk.Checkbutton(frame_checklist, text=step.replace('_', ' ').capitalize(), variable=var)
     cb.grid(row=idx, column=0, sticky='w', padx=10)
     cb.config(state='disabled')
     steps_done[step] = (var, cb)
 
-spinner_label = tk.Label(root, text='|', font=("Arial", 20), bg='#2e2e2e', fg='cyan')
-spinner_label.grid(row=2, column=1, sticky='e')
-
-run_button = tk.Button(root, text="Run", command=threaded_run, bg='#4caf50', fg='white')
-run_button.grid(row=7, column=0, pady=10, padx=5)
-
-open_excel_button = tk.Button(root, text="Open MCC Template", command=open_excel_template, bg='#2196f3', fg='white')
-open_excel_button.grid(row=7, column=1, pady=10, padx=5)
-
-# Debug console
-debug_console = tk.Text(root, height=10, width=80, bg='#1e1e1e', fg='lime', state='disabled')
-debug_console.grid(row=8, column=0, columnspan=2, padx=10, pady=10)
+# Debug Console
+debug_console = tk.Text(frame_console, height=10, width=100, bg='#1e1e1e', fg='lime', state='disabled')
+debug_console.pack()
 
 root.mainloop()
