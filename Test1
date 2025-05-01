@@ -156,6 +156,7 @@ def run_script():
         insert_df['LEVEL12_EXISTS'] = insert_df['LEVEL_12'].isin(old_mcc_df['LEVEL_12'])
         insert_df['LEGAL_ENTITY'] = 'CGME' if selected_entity == 'CGME PRA' else selected_entity
 
+        insert_df['LEVEL_12'] = insert_df['LEVEL_12'].str.replace('^S2', '', regex=True)
         insert_df = insert_df[['LEVEL_10', 'GOC_ID', 'LEVEL_12', 'LEVEL_4', 'LEVEL_6', 'LEVEL_8', 'LEVEL_9', 'DESK_LEVEL', 'MATCHED_ON_LEVEL', 'LEVEL12_EXISTS', 'LEGAL_ENTITY']]
 
         with pd.ExcelWriter(EXCEL_FILE_PATH, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
@@ -218,7 +219,7 @@ excel_button.grid(row=0, column=2, padx=5)
 steps = ['db_open', 'access_loaded', 'excel_loaded', 'oracle_fetched', 'saved_excel']
 for idx, step in enumerate(steps):
     var = tb.BooleanVar()
-    cb = tb.Checkbutton(frame_checklist, text=step.replace('_', ' ').capitalize(), variable=var, bootstyle="info-round-toggle")
+    cb = tb.Checkbutton(frame_checklist, text=step.replace('_', ' ').capitalize(), variable=var, bootstyle="success-round-toggle toolbutton")
     cb.grid(row=idx, column=0, sticky='w', padx=10)
     cb.config(state='disabled')
     steps_done[step] = (var, cb)
