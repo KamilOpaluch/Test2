@@ -49,15 +49,22 @@ while True:
         src_used_range = src_sheet.used_range
         dest_sheet.clear()  # Clear existing data
         src_used_range.api.Copy(dest_sheet.range("A1").api)
-        dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only to remove formulas
+        dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only
 
     # Copy partial range CGML_Reg_Capital
     src_reg = book12.sheets["CGML_Reg_Capital"]
     dest_reg = raw_book.sheets["CGML_Reg_Capital"]
     src_range = src_reg.range("C41:N47")
     dest_range = dest_reg.range("C41")
-    src_range.copy(dest_range)
-    dest_range.value = dest_range.value  # Convert to values only
+
+    # Copy values only first (no formulas)
+    values = src_range.value
+    dest_range.value = values
+
+    # Then copy only formats
+    src_range.api.Copy()
+    dest_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
+    raw_book.app.api.CutCopyMode = False  # Clear clipboard
 
     # Save to output
     output_path = os.path.join(output_dir, os.path.basename(raw_file_path))
@@ -77,10 +84,12 @@ while True:
         dest_range = sheet.range(f"{col_start}4")
         src_range.copy(dest_range)
         dest_range.value = dest_range.value  # Paste values only
-        # Optional: clear old bottom row if needed
-        sheet.range(f"{col_start}{last_row}").entire_row.clear_contents()
 
-    # Refresh formulas (optional)
+        # Clear old bottom row
+        clear_range = sheet.range(f"{col_start}{last_row}:{col_end}{last_row}")
+        clear_range.clear_contents()
+
+    # Refresh formulas
     book12.app.calculate()
 
 # Clean up
