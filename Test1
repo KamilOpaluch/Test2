@@ -40,37 +40,48 @@ while True:
         break
 
     raw_file_path = matches[0]
-    raw_book = app.books.open(raw_file_path)
 
-    # Copy full sheets
-    for sheet_name in ["CGME_60Days", "CGME_60Days_ECB", "60Days"]:
-        src_sheet = book12.sheets[sheet_name]
-        dest_sheet = raw_book.sheets[sheet_name]
-        src_used_range = src_sheet.used_range
-        dest_sheet.clear()  # Clear existing data
-        src_used_range.api.Copy(dest_sheet.range("A1").api)
-        dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only
+    try:
+        raw_book = app.books.open(raw_file_path)
 
-    # Copy partial range CGML_Reg_Capital
-    src_reg = book12.sheets["CGML_Reg_Capital"]
-    dest_reg = raw_book.sheets["CGML_Reg_Capital"]
-    src_range = src_reg.range("C41:N47")
-    dest_range = dest_reg.range("C41")
+        # Copy full sheets
+        for sheet_name in ["CGME_60Days", "CGME_60Days_ECB", "60Days"]:
+            src_sheet = book12.sheets[sheet_name]
+            dest_sheet = raw_book.sheets[sheet_name]
+            src_used_range = src_sheet.used_range
+            dest_sheet.clear()  # Clear existing data
+            src_used_range.api.Copy(dest_sheet.range("A1").api)
+            dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only
 
-    # Copy values only first (no formulas)
-    values = src_range.value
-    dest_range.value = values
+        # Copy partial range CGML_Reg_Capital
+        src_reg = book12.sheets["CGML_Reg_Capital"]
+        dest_reg = raw_book.sheets["CGML_Reg_Capital"]
+        src_range = src_reg.range("C41:N47")
+        dest_range = dest_reg.range("C41")
 
-    # Then copy only formats
-    src_range.api.Copy()
-    dest_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
-    raw_book.app.api.CutCopyMode = False  # Clear clipboard
+        # Copy values only first (no formulas)
+        values = src_range.value
+        dest_range.value = values
 
-    # Save to output
-    output_path = os.path.join(output_dir, os.path.basename(raw_file_path))
-    raw_book.save(output_path)
-    raw_book.close()
-    print(f"Saved processed file for {date_str}.")
+        # Then copy only formats
+        src_range.api.Copy()
+        dest_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
+        raw_book.app.api.CutCopyMode = False  # Clear clipboard
+
+        # Save to output
+        output_path = os.path.join(output_dir, os.path.basename(raw_file_path))
+        raw_book.save(output_path)
+        raw_book.close()
+        print(f"Saved processed file for {date_str}.")
+
+    except Exception as e:
+        print(f"Error processing {date_str}: {str(e)}. Skipping this file.")
+        # Try to close file if open
+        try:
+            raw_book.close()
+        except:
+            pass
+        # continue to shift data anyway
 
     # --- Shift rows up in Book12 ---
     for sheet_name, col_start, col_end in [
