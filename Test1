@@ -1,159 +1,90 @@
-import os, glob
+import os
+import glob
 from datetime import datetime
-from copy import copy
 import pandas as pd
-import openpyxl
+import xlwings as xw
 
-# Define base directory (adjust the path to your environment)
+# Paths
 base_dir = os.path.join(os.path.expanduser("~"), "Desktop", "IA Salamana capital")
 book12_path = os.path.join(base_dir, "Book12.xlsx")
 raw_dir = os.path.join(base_dir, "raw_files")
 output_dir = os.path.join(base_dir, "output_files")
+os.makedirs(output_dir, exist_ok=True)
 
-# Load the source workbook with data_only=True to get values instead of formulas
-wb_source = openpyxl.load_workbook(book12_path, data_only=True)
-ws_data_capital = wb_source["CGML_DATA_CAPITAL"]
+# Open Book12 template (keep open through all process)
+app = xw.App(visible=False)
+book12 = app.books.open(book12_path)
+ws_data_capital = book12.sheets["CGML_DATA_CAPITAL"]
 
-# Sheets to fully replace and partial replace specification
-full_replace_sheets = ["CGME_60Days", "CGME_60Days_ECB", "60Days"]
-partial_sheet = "CGML_Reg_Capital"
-partial_range = ("C41", "N47")  # start and end cells of the range to replace
+def get_date(cell_value):
+    if isinstance(cell_value, datetime):
+        return cell_value
+    return pd.to_datetime(cell_value).to_pydatetime()
 
-# Data sheets and their column ranges for rolling back
-data_sheets_info = [
-    ("CGME_DATA_CAPITAL_PRA", "A", "T"),
-    ("CGME_DATA_CAPITAL_ECB", "A", "AG"),
-    ("CGML_DATA_CAPITAL", "A", "U")
-]
-
-# Loop until date in A4 is outside Q1 2025
 while True:
-    # Get the date from cell A4
-    date_val = ws_data_capital["A4"].value
+    # Read date from A4
+    date_val = ws_data_capital.range("A4").value
     if date_val is None:
-        # No date found, end loop
         break
-    # Ensure date_val is a datetime object
-    if not isinstance(date_val, datetime):
-        try:
-            # Try pandas to parse if it's a string or Excel serial
-            date_val = pd.to_datetime(date_val)
-            # Convert pandas Timestamp to datetime
-            date_val = date_val.to_pydatetime()
-        except Exception:
-            # If pandas fails, try manual parsing (assuming m/d/yyyy format as given)
-            try:
-                date_val = datetime.strptime(str(date_val), "%m/%d/%Y")
-            except Exception:
-                # Unable to parse date; break out
-                break
-    # Check if date is in Q1 2025
+
+    date_val = get_date(date_val)
     if not (date_val.year == 2025 and 1 <= date_val.month <= 3):
-        # Date is outside Q1 2025, stop the loop
         break
 
-    # Format date as YYYYMMDD for file matching
     date_str = date_val.strftime("%Y%m%d")
-
-    # Find the raw file that starts with this date
     pattern = os.path.join(raw_dir, f"{date_str}_*.xlsx")
     matches = glob.glob(pattern)
-    if len(matches) == 0:
-        print(f"Raw file not found for date {date_str}. Skipping...")
-        # Move to next date (roll forward one day) if no file, or break
-        date_val += pd.DateOffset(days=1)  # requires pandas, or use datetime.timedelta
-        ws_data_capital["A4"].value = date_val.to_pydatetime() if isinstance(date_val, pd.Timestamp) else date_val
-        continue
+    
+    if not matches:
+        print(f"No file found for {date_str}, skipping.")
+        break
+
     raw_file_path = matches[0]
+    raw_book = app.books.open(raw_file_path)
 
-    # Open the raw file workbook
-    wb_raw = openpyxl.load_workbook(raw_file_path)
+    # Copy full sheets
+    for sheet_name in ["CGME_60Days", "CGME_60Days_ECB", "60Days"]:
+        src_sheet = book12.sheets[sheet_name]
+        dest_sheet = raw_book.sheets[sheet_name]
+        src_used_range = src_sheet.used_range
+        dest_sheet.clear()  # Clear existing data
+        src_used_range.api.Copy(dest_sheet.range("A1").api)
+        dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only to remove formulas
 
-    # --- Replace full sheets content ---
-    for sheet_name in full_replace_sheets:
-        if sheet_name in wb_source.sheetnames and sheet_name in wb_raw.sheetnames:
-            src_sheet = wb_source[sheet_name]
-            dest_sheet = wb_raw[sheet_name]
-            # Copy all cells (values and styles)
-            for src_row in src_sheet.rows:
-                for src_cell in src_row:
-                    dest_cell = dest_sheet.cell(row=src_cell.row, column=src_cell.col_idx)
-                    dest_cell.value = src_cell.value
-                    if src_cell.has_style:
-                        dest_cell.font = copy(src_cell.font)
-                        dest_cell.border = copy(src_cell.border)
-                        dest_cell.fill = copy(src_cell.fill)
-                        dest_cell.number_format = copy(src_cell.number_format)
-                        dest_cell.alignment = copy(src_cell.alignment)
-                        dest_cell.protection = copy(src_cell.protection)
-                    if src_cell.hyperlink:
-                        dest_cell.hyperlink = copy(src_cell.hyperlink)
-                    if src_cell.comment:
-                        dest_cell.comment = copy(src_cell.comment)
-            # Copy merged cells ranges and freeze panes
-            dest_sheet.merged_cells = copy(src_sheet.merged_cells)
-            dest_sheet.freeze_panes = copy(src_sheet.freeze_panes)
-            # Copy row heights and column widths
-            for rn, dim in src_sheet.row_dimensions.items():
-                dest_sheet.row_dimensions[rn].height = dim.height
-            for col, dim in src_sheet.column_dimensions.items():
-                dest_sheet.column_dimensions[col].width = dim.width
-                dest_sheet.column_dimensions[col].hidden = dim.hidden
+    # Copy partial range CGML_Reg_Capital
+    src_reg = book12.sheets["CGML_Reg_Capital"]
+    dest_reg = raw_book.sheets["CGML_Reg_Capital"]
+    src_range = src_reg.range("C41:N47")
+    dest_range = dest_reg.range("C41")
+    src_range.copy(dest_range)
+    dest_range.value = dest_range.value  # Convert to values only
 
-    # --- Replace partial range in CGML_Reg_Capital ---
-    if partial_sheet in wb_source.sheetnames and partial_sheet in wb_raw.sheetnames:
-        src_sheet = wb_source[partial_sheet]
-        dest_sheet = wb_raw[partial_sheet]
-        start_col_idx = openpyxl.utils.column_index_from_string(partial_range[0][0])
-        start_row_idx = int(partial_range[0][1:])
-        end_col_idx = openpyxl.utils.column_index_from_string(partial_range[1][0])
-        end_row_idx = int(partial_range[1][1:])
-        for r in range(start_row_idx, end_row_idx + 1):
-            for c in range(start_col_idx, end_col_idx + 1):
-                src_cell = src_sheet.cell(row=r, column=c)
-                dest_cell = dest_sheet.cell(row=r, column=c)
-                dest_cell.value = src_cell.value
-                if src_cell.has_style:
-                    dest_cell.font = copy(src_cell.font)
-                    dest_cell.border = copy(src_cell.border)
-                    dest_cell.fill = copy(src_cell.fill)
-                    dest_cell.number_format = copy(src_cell.number_format)
-                    dest_cell.alignment = copy(src_cell.alignment)
-                    dest_cell.protection = copy(src_cell.protection)
-
-    # Save the updated raw file to the output_files directory
-    os.makedirs(output_dir, exist_ok=True)
+    # Save to output
     output_path = os.path.join(output_dir, os.path.basename(raw_file_path))
-    wb_raw.save(output_path)
-    wb_raw.close()
-    print(f"Saved updated file for {date_str} to output_files.")
+    raw_book.save(output_path)
+    raw_book.close()
+    print(f"Saved processed file for {date_str}.")
 
-    # --- Roll back data in source workbook for next iteration ---
-    for sheet_name, col_start, col_end in data_sheets_info:
-        ws = wb_source[sheet_name]
-        # Determine last data row in the specified range (A to col_end)
-        min_col = openpyxl.utils.column_index_from_string(col_start)
-        max_col = openpyxl.utils.column_index_from_string(col_end)
-        max_row = ws.max_row
-        # Find last row that has any data in the given column range
-        while max_row >= 5:
-            if any(ws.cell(row=max_row, column=c).value not in (None, "") for c in range(min_col, max_col+1)):
-                break
-            max_row -= 1
-        last_data_row = max_row
-        if last_data_row < 5:
-            continue  # no data to roll
-        # Copy rows 5 through last_data_row (plus one) up one row
-        for r in range(5, last_data_row + 2):
-            for c in range(min_col, max_col + 1):
-                ws.cell(row=r-1, column=c).value = ws.cell(row=r, column=c).value
+    # --- Shift rows up in Book12 ---
+    for sheet_name, col_start, col_end in [
+        ("CGME_DATA_CAPITAL_PRA", "A", "T"),
+        ("CGME_DATA_CAPITAL_ECB", "A", "AG"),
+        ("CGML_DATA_CAPITAL", "A", "U")
+    ]:
+        sheet = book12.sheets[sheet_name]
+        last_row = sheet.range(f"{col_end}100000").end("up").row
+        src_range = sheet.range(f"{col_start}5:{col_end}{last_row}")
+        dest_range = sheet.range(f"{col_start}4")
+        src_range.copy(dest_range)
+        dest_range.value = dest_range.value  # Paste values only
+        # Optional: clear old bottom row if needed
+        sheet.range(f"{col_start}{last_row}").entire_row.clear_contents()
 
-    # Refresh the date in ws_data_capital (it has moved up after shifting)
-    # Now ws_data_capital["A4"].value is already the next date (formerly A5).
-    # Loop will naturally pick it up in the next iteration.
+    # Refresh formulas (optional)
+    book12.app.calculate()
 
-# End of loop
+# Clean up
+book12.close(save=False)
+app.quit()
 
-print("Processing complete. All Q1 2025 dates handled.")
-# Note: We do NOT save wb_source, per instructions.
-wb_source.close()
+print("All done!")
