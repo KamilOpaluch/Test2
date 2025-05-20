@@ -2,8 +2,8 @@ import cx_Oracle
 import pandas as pd
 from openpyxl.utils.exceptions import IllegalCharacterError
 
-# === Connection setup ===
-dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or service_name="..."
+# === Connect to Oracle ===
+dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name="..."
 conn = cx_Oracle.connect(user="your_user", password="your_password", dsn=dsn)
 cursor = conn.cursor()
 
@@ -17,25 +17,25 @@ cursor.execute("""
 tables = [row[0] for row in cursor.fetchall()]
 print(f"Found {len(tables)} matching tables.")
 
-# === Prepare Excel file ===
+# === Prepare Excel output ===
 excel_path = "issuer_risk_report.xlsx"
 with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-    # Sheet with table list
     pd.DataFrame(tables, columns=["Matching_Tables"]).to_excel(writer, sheet_name="Table_List", index=False)
 
     for table in tables:
-        # Get column names
-        cursor.execute("""
+        print(f"Processing table: {table}")
+        # Build and execute column metadata query
+        cursor.execute(f"""
             SELECT column_name 
             FROM all_tab_columns 
-            WHERE table_name = :table
-        """, {"table": table})
+            WHERE table_name = '{table}'
+        """)
         columns = [r[0] for r in cursor.fetchall()]
 
-        # Get one sample value per column
         data = []
         for col in columns:
             try:
+                # Fetch one row value from the column
                 cursor.execute(f'SELECT "{col}" FROM "{table}" WHERE ROWNUM = 1')
                 val = cursor.fetchone()
                 example = val[0] if val else None
@@ -44,12 +44,12 @@ with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
             data.append((col, example))
 
         df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
-        safe_sheet = table[:31]
+        sheet_name = table[:31]
         try:
-            df.to_excel(writer, sheet_name=safe_sheet, index=False)
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
         except IllegalCharacterError:
-            cleaned = ''.join(c if c.isalnum() else '_' for c in safe_sheet)
-            df.to_excel(writer, sheet_name=cleaned, index=False)
+            safe_name = ''.join(c if c.isalnum() else '_' for c in sheet_name)
+            df.to_excel(writer, sheet_name=safe_name, index=False)
 
 # === Cleanup ===
 cursor.close()
