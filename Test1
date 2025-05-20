@@ -1,44 +1,57 @@
 import cx_Oracle
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.exceptions import IllegalCharacterError
 
-# Connect to Oracle
-dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name="..."
+# Oracle connection
+dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name
 conn = cx_Oracle.connect(user="your_user", password="your_password", dsn=dsn)
 cursor = conn.cursor()
 
-# Find all tables with "ISSUER" in their names (case-insensitive)
+# Get all tables with "ISSUER" in name
 cursor.execute("""
     SELECT table_name 
     FROM all_tables 
     WHERE table_name LIKE '%ISSUER%' AND owner = UPPER(:owner)
-""", owner='YOUR_SCHEMA')  # replace with your schema
+""", owner='YOUR_SCHEMA')  # Replace with your schema name
 tables = [row[0] for row in cursor.fetchall()]
 
-# Loop through each table and extract column names and example values
-for table in tables:
-    print(f"\nTable: {table}")
+# Prepare Excel writer
+excel_path = "issuer_tables_report.xlsx"
+with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+    # Summary sheet with list of matching tables
+    pd.DataFrame(tables, columns=["Issuer_Tables"]).to_excel(writer, sheet_name="Table_List", index=False)
     
-    # Get column names
-    cursor.execute(f"""
-        SELECT column_name 
-        FROM all_tab_columns 
-        WHERE table_name = :table
-    """, table=table)
-    columns = [row[0] for row in cursor.fetchall()]
+    # For each table: extract column names + example value
+    for table in tables:
+        cursor.execute(f"""
+            SELECT column_name 
+            FROM all_tab_columns 
+            WHERE table_name = :table
+        """, table=table)
+        columns = [row[0] for row in cursor.fetchall()]
 
-    data = []
-    for col in columns:
+        data = []
+        for col in columns:
+            try:
+                cursor.execute(f'SELECT "{col}" FROM {table} WHERE ROWNUM = 1')
+                val = cursor.fetchone()
+                example = val[0] if val else None
+            except Exception as e:
+                example = f"Error: {e}"
+            data.append((col, example))
+        
+        df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
+        # Handle sheet name limit (31 chars max)
+        sheet_name = table[:31]
         try:
-            cursor.execute(f'SELECT "{col}" FROM {table} WHERE ROWNUM = 1')
-            val = cursor.fetchone()
-            example = val[0] if val else None
-        except Exception as e:
-            example = f"Error: {e}"
-        data.append((col, example))
-
-    df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
-    print(df)
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        except IllegalCharacterError:
+            safe_name = ''.join(c if c.isalnum() else '_' for c in sheet_name)
+            df.to_excel(writer, sheet_name=safe_name, index=False)
 
 # Cleanup
 cursor.close()
 conn.close()
+
+print(f"Report saved to {excel_path}")
