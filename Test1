@@ -2,7 +2,7 @@ import cx_Oracle
 import pandas as pd
 from openpyxl.utils.exceptions import IllegalCharacterError
 
-# === Connect to Oracle ===
+# === Connection setup ===
 dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name="..."
 conn = cx_Oracle.connect(user="your_user", password="your_password", dsn=dsn)
 cursor = conn.cursor()
@@ -17,41 +17,67 @@ cursor.execute("""
 tables = [row[0] for row in cursor.fetchall()]
 print(f"Found {len(tables)} matching tables.")
 
-# === Prepare Excel output ===
+# === Excel output setup ===
 excel_path = "issuer_risk_report.xlsx"
 with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-    pd.DataFrame(tables, columns=["Matching_Tables"]).to_excel(writer, sheet_name="Table_List", index=False)
+    summary_rows = []
 
     for table in tables:
         print(f"Processing table: {table}")
-        # Build and execute column metadata query
-        cursor.execute(f"""
-            SELECT column_name 
-            FROM all_tab_columns 
-            WHERE table_name = '{table}'
-        """)
-        columns = [r[0] for r in cursor.fetchall()]
+        # Step 1: Get column names
+        try:
+            cursor.execute(f"""
+                SELECT column_name 
+                FROM all_tab_columns 
+                WHERE table_name = '{table}'
+            """)
+            columns = [r[0] for r in cursor.fetchall()]
+        except Exception as e:
+            error_msg = f"Error fetching columns: {str(e)}"
+            summary_rows.append((table, error_msg))
+            continue
 
+        # Step 2: Fetch one value per column
         data = []
+        status = "Unavailable (no data)"
         for col in columns:
             try:
-                # Fetch one row value from the column
                 cursor.execute(f'SELECT "{col}" FROM "{table}" WHERE ROWNUM = 1')
                 val = cursor.fetchone()
                 example = val[0] if val else None
-            except Exception as e:
-                example = f"Error: {e}"
-            data.append((col, example))
+                if example is not None:
+                    status = "Available"
+                data.append((col, example))
+            except cx_Oracle.DatabaseError as e:
+                error_msg = str(e)
+                if "ORA-04045" in error_msg:
+                    example = "ORA-04045: Read-only / recompilation error"
+                    status = "ORA-04045: Read-only / recompilation error"
+                elif "ORA-" in error_msg:
+                    ora_code = error_msg.split("ORA-", 1)[1].split(":")[0]
+                    example = f"ORA-{ora_code}: Error"
+                    status = f"ORA-{ora_code}: Error"
+                else:
+                    example = f"Error: {error_msg}"
+                    status = f"Error: {error_msg}"
+                data.append((col, example))
 
+        # Step 3: Save detailed sheet
         df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
         sheet_name = table[:31]
         try:
             df.to_excel(writer, sheet_name=sheet_name, index=False)
         except IllegalCharacterError:
-            safe_name = ''.join(c if c.isalnum() else '_' for c in sheet_name)
-            df.to_excel(writer, sheet_name=safe_name, index=False)
+            safe_sheet = ''.join(c if c.isalnum() else '_' for c in sheet_name)
+            df.to_excel(writer, sheet_name=safe_sheet, index=False)
+
+        summary_rows.append((table, status))
+
+    # Step 4: Save summary sheet
+    summary_df = pd.DataFrame(summary_rows, columns=["Table", "Status"])
+    summary_df.to_excel(writer, sheet_name="Table_List", index=False)
 
 # === Cleanup ===
 cursor.close()
 conn.close()
-print(f"Excel saved as: {excel_path}")
+print(f"\nExcel report saved to: {excel_path}")
