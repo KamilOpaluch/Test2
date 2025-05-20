@@ -1,110 +1,44 @@
-import os
-import glob
-from datetime import datetime
+import cx_Oracle
 import pandas as pd
-import xlwings as xw
 
-# Paths
-base_dir = os.path.join(os.path.expanduser("~"), "Desktop", "IA Salamana capital")
-book12_path = os.path.join(base_dir, "Book12.xlsx")
-raw_dir = os.path.join(base_dir, "raw_files")
-output_dir = os.path.join(base_dir, "output_files")
-os.makedirs(output_dir, exist_ok=True)
+# Connect to Oracle
+dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name="..."
+conn = cx_Oracle.connect(user="your_user", password="your_password", dsn=dsn)
+cursor = conn.cursor()
 
-# Open Book12 template (keep open through all process)
-app = xw.App(visible=False)
-book12 = app.books.open(book12_path)
-ws_data_capital = book12.sheets["CGML_DATA_CAPITAL"]
+# Find all tables with "ISSUER" in their names (case-insensitive)
+cursor.execute("""
+    SELECT table_name 
+    FROM all_tables 
+    WHERE table_name LIKE '%ISSUER%' AND owner = UPPER(:owner)
+""", owner='YOUR_SCHEMA')  # replace with your schema
+tables = [row[0] for row in cursor.fetchall()]
 
-def get_date(cell_value):
-    if isinstance(cell_value, datetime):
-        return cell_value
-    return pd.to_datetime(cell_value).to_pydatetime()
-
-while True:
-    # Read date from A4
-    date_val = ws_data_capital.range("A4").value
-    if date_val is None:
-        break
-
-    date_val = get_date(date_val)
-    if not (date_val.year == 2025 and 1 <= date_val.month <= 3):
-        break
-
-    date_str = date_val.strftime("%Y%m%d")
-    pattern = os.path.join(raw_dir, f"{date_str}_*.xlsx")
-    matches = glob.glob(pattern)
+# Loop through each table and extract column names and example values
+for table in tables:
+    print(f"\nTable: {table}")
     
-    if not matches:
-        print(f"No file found for {date_str}, skipping.")
-        break
+    # Get column names
+    cursor.execute(f"""
+        SELECT column_name 
+        FROM all_tab_columns 
+        WHERE table_name = :table
+    """, table=table)
+    columns = [row[0] for row in cursor.fetchall()]
 
-    raw_file_path = matches[0]
-
-    try:
-        raw_book = app.books.open(raw_file_path)
-
-        # Copy full sheets
-        for sheet_name in ["CGME_60Days", "CGME_60Days_ECB", "60Days"]:
-            src_sheet = book12.sheets[sheet_name]
-            dest_sheet = raw_book.sheets[sheet_name]
-            src_used_range = src_sheet.used_range
-            dest_sheet.clear()  # Clear existing data
-            src_used_range.api.Copy(dest_sheet.range("A1").api)
-            dest_sheet.used_range.api.Value = dest_sheet.used_range.api.Value  # Paste values only
-
-        # Copy partial range CGML_Reg_Capital
-        src_reg = book12.sheets["CGML_Reg_Capital"]
-        dest_reg = raw_book.sheets["CGML_Reg_Capital"]
-        src_range = src_reg.range("C41:N47")
-        dest_range = dest_reg.range("C41")
-
-        # Copy values only first (no formulas)
-        values = src_range.value
-        dest_range.value = values
-
-        # Then copy only formats
-        src_range.api.Copy()
-        dest_range.api.PasteSpecial(Paste=-4122)  # xlPasteFormats
-        raw_book.app.api.CutCopyMode = False  # Clear clipboard
-
-        # Save to output
-        output_path = os.path.join(output_dir, os.path.basename(raw_file_path))
-        raw_book.save(output_path)
-        raw_book.close()
-        print(f"Saved processed file for {date_str}.")
-
-    except Exception as e:
-        print(f"Error processing {date_str}: {str(e)}. Skipping this file.")
-        # Try to close file if open
+    data = []
+    for col in columns:
         try:
-            raw_book.close()
-        except:
-            pass
-        # continue to shift data anyway
+            cursor.execute(f'SELECT "{col}" FROM {table} WHERE ROWNUM = 1')
+            val = cursor.fetchone()
+            example = val[0] if val else None
+        except Exception as e:
+            example = f"Error: {e}"
+        data.append((col, example))
 
-    # --- Shift rows up in Book12 ---
-    for sheet_name, col_start, col_end in [
-        ("CGME_DATA_CAPITAL_PRA", "A", "T"),
-        ("CGME_DATA_CAPITAL_ECB", "A", "AG"),
-        ("CGML_DATA_CAPITAL", "A", "U")
-    ]:
-        sheet = book12.sheets[sheet_name]
-        last_row = sheet.range(f"{col_end}100000").end("up").row
-        src_range = sheet.range(f"{col_start}5:{col_end}{last_row}")
-        dest_range = sheet.range(f"{col_start}4")
-        src_range.copy(dest_range)
-        dest_range.value = dest_range.value  # Paste values only
+    df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
+    print(df)
 
-        # Clear old bottom row
-        clear_range = sheet.range(f"{col_start}{last_row}:{col_end}{last_row}")
-        clear_range.clear_contents()
-
-    # Refresh formulas
-    book12.app.calculate()
-
-# Clean up
-book12.close(save=False)
-app.quit()
-
-print("All done!")
+# Cleanup
+cursor.close()
+conn.close()
