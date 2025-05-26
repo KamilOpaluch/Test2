@@ -1,83 +1,118 @@
-import cx_Oracle
+import os
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkinter.filedialog import asksaveasfilename
 import pandas as pd
-from openpyxl.utils.exceptions import IllegalCharacterError
+import requests
+from datetime import datetime, timedelta
+import sqlite3
+from io import BytesIO
+from workdays import workday
 
-# === Connection setup ===
-dsn = cx_Oracle.makedsn("host", port, sid="your_sid")  # or use service_name="..."
-conn = cx_Oracle.connect(user="your_user", password="your_password", dsn=dsn)
-cursor = conn.cursor()
+# === CONFIGURATION === #
+links_dict = {
+    "https://example.com/shared/{date}/report1.xlsx": "report1_df",
+    "https://example.com/shared/{date}/report2.xlsx": "report2_df",
+    # Add more links and variable names here
+}
 
-# === Find matching tables ===
-cursor.execute("""
-    SELECT table_name 
-    FROM all_tables 
-    WHERE table_name LIKE '%ISSUER_RISK%' 
-      AND table_name NOT LIKE '%RETIRED%'
-""")
-tables = [row[0] for row in cursor.fetchall()]
-print(f"Found {len(tables)} matching tables.")
+DB_FILE = "report_data.db"
+LOG_FILE = "download_logs.txt"
 
-# === Excel output setup ===
-excel_path = "issuer_risk_report.xlsx"
-with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-    summary_rows = []
+# === BUSINESS DAY FUNCTIONS === #
+def get_business_day(offset):
+    today = datetime.today().date()
+    return workday(today, offset).strftime("%Y%d%m")
 
-    for table in tables:
-        print(f"Processing table: {table}")
-        # Step 1: Get column names
+# === DATA HANDLING === #
+def download_and_parse_excel(link, date_str, table_prefix):
+    url = link.format(date=date_str)
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        xls = pd.ExcelFile(BytesIO(response.content))
+
+        valid_sheets = [s for s in xls.sheet_names if s.lower() != "selectioncriteria"]
+        if not valid_sheets:
+            raise ValueError("Only SelectionCriteria found")
+
+        df = pd.read_excel(xls, sheet_name=valid_sheets[0], skiprows=2)
+        if df.dropna(how="all").shape[0] == 0:
+            raise ValueError("No data rows")
+
+        return df, url
+    except Exception as e:
+        with open(LOG_FILE, "a") as log:
+            log.write(f"{table_prefix}_{os.path.basename(link)}: {url} - {e}\n")
+        return None, url
+
+# === DATABASE === #
+def save_to_db(df, table_name):
+    conn = sqlite3.connect(DB_FILE)
+    df.to_sql(table_name, conn, if_exists="replace", index=False)
+    conn.close()
+
+# === GUI === #
+class ExcelDownloaderApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Excel Downloader Tool")
+
+        today_t2 = get_business_day(-2)
+        self.date_var = tk.StringVar(value=today_t2)
+
+        tk.Label(root, text="Select T-2 Date (yyyyddmm):").pack()
+        self.date_entry = tk.Entry(root, textvariable=self.date_var)
+        self.date_entry.pack()
+
+        self.check_vars = {}
+        self.check_all_var = tk.IntVar()
+
+        tk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack()
+
+        for url in links_dict:
+            var = tk.IntVar(value=1)
+            self.check_vars[url] = var
+            tk.Checkbutton(root, text=url, variable=var, wraplength=400).pack(anchor="w")
+
+        tk.Button(root, text="Run", command=self.run_download).pack(pady=10)
+
+    def toggle_all(self):
+        for var in self.check_vars.values():
+            var.set(self.check_all_var.get())
+
+    def run_download(self):
+        t2_date = self.date_var.get()
         try:
-            cursor.execute(f"""
-                SELECT column_name 
-                FROM all_tab_columns 
-                WHERE table_name = '{table}'
-            """)
-            columns = [r[0] for r in cursor.fetchall()]
-        except Exception as e:
-            error_msg = f"Error fetching columns: {str(e)}"
-            summary_rows.append((table, error_msg))
-            continue
+            datetime.strptime(t2_date, "%Y%d%m")
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Enter date in yyyyddmm format.")
+            return
 
-        # Step 2: Fetch one value per column
-        data = []
-        status = "Unavailable (no data)"
-        for col in columns:
-            try:
-                cursor.execute(f'SELECT "{col}" FROM "{table}" WHERE ROWNUM = 1')
-                val = cursor.fetchone()
-                example = val[0] if val else None
-                if example is not None:
-                    status = "Available"
-                data.append((col, example))
-            except cx_Oracle.DatabaseError as e:
-                error_msg = str(e)
-                if "ORA-04045" in error_msg:
-                    example = "ORA-04045: Read-only / recompilation error"
-                    status = "ORA-04045: Read-only / recompilation error"
-                elif "ORA-" in error_msg:
-                    ora_code = error_msg.split("ORA-", 1)[1].split(":")[0]
-                    example = f"ORA-{ora_code}: Error"
-                    status = f"ORA-{ora_code}: Error"
-                else:
-                    example = f"Error: {error_msg}"
-                    status = f"Error: {error_msg}"
-                data.append((col, example))
+        t3_date = workday(datetime.strptime(t2_date, "%Y%d%m").date(), -1).strftime("%Y%d%m")
 
-        # Step 3: Save detailed sheet
-        df = pd.DataFrame(data, columns=["Column_name", "Example_value"])
-        sheet_name = table[:31]
-        try:
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-        except IllegalCharacterError:
-            safe_sheet = ''.join(c if c.isalnum() else '_' for c in sheet_name)
-            df.to_excel(writer, sheet_name=safe_sheet, index=False)
+        if os.path.exists(LOG_FILE):
+            os.remove(LOG_FILE)
 
-        summary_rows.append((table, status))
+        all_successful = True
+        for url, var in self.check_vars.items():
+            if var.get():
+                for prefix, d in zip(["T2", "T3"], [t2_date, t3_date]):
+                    df, attempted_url = download_and_parse_excel(url, d, prefix)
+                    if df is not None:
+                        table_name = f"{prefix}_{os.path.basename(url).replace('.xlsx','')}"
+                        save_to_db(df, table_name)
+                    else:
+                        all_successful = False
 
-    # Step 4: Save summary sheet
-    summary_df = pd.DataFrame(summary_rows, columns=["Table", "Status"])
-    summary_df.to_excel(writer, sheet_name="Table_List", index=False)
+        if all_successful:
+            messagebox.showinfo("Success", "All data successfully loaded.")
+        else:
+            if messagebox.askyesno("Missing Data", "Some data were missing or empty. Open logs?"):
+                os.startfile(LOG_FILE)
 
-# === Cleanup ===
-cursor.close()
-conn.close()
-print(f"\nExcel report saved to: {excel_path}")
+# === MAIN === #
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ExcelDownloaderApp(root)
+    root.mainloop()
