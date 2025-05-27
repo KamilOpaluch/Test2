@@ -1,12 +1,16 @@
 import os
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
 from io import BytesIO
 from workdays import workday
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # === CONFIGURATION === #
 links_list = [
@@ -27,7 +31,7 @@ def get_business_day(offset):
 def download_and_parse_excel(link, date_str, table_prefix):
     url = link.format(date=date_str)
     try:
-        response = requests.get(url)
+        response = requests.get(url, verify=False)
         response.raise_for_status()
         xls = pd.ExcelFile(BytesIO(response.content))
 
@@ -57,40 +61,63 @@ class ExcelDownloaderApp:
         self.root = root
         self.root.title("Excel Downloader Tool")
         self.root.configure(bg="#2e2e2e")
+        self.root.geometry("600x500")
 
         style = ttk.Style()
         style.theme_use("default")
-        style.configure("TLabel", background="#2e2e2e", foreground="white")
-        style.configure("TButton", background="#444", foreground="white")
-        style.configure("TCheckbutton", background="#2e2e2e", foreground="white")
+        style.configure("TLabel", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
+        style.configure("TButton", background="#3c3f41", foreground="white", font=("Segoe UI", 10), padding=6)
+        style.configure("TCheckbutton", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
+        style.configure("Horizontal.TProgressbar", troughcolor="#444", background="#61afef", thickness=20)
 
         today_t2 = get_business_day(-2)
         self.date_var = tk.StringVar(value=today_t2)
 
         ttk.Label(root, text="Select T-2 Date (yyyymmdd):").pack(pady=5)
-        self.date_entry = ttk.Entry(root, textvariable=self.date_var)
+        self.date_entry = ttk.Entry(root, textvariable=self.date_var, width=20)
         self.date_entry.pack(pady=5)
 
         self.check_vars = {}
         self.check_all_var = tk.IntVar()
-
         ttk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack(pady=5)
 
-        self.frame = ttk.Frame(root)
-        self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.table_frame = ttk.Frame(root)
+        self.table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.canvas = tk.Canvas(self.table_frame, bg="#2e2e2e")
+        self.scrollbar = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.canvas.yview)
+        self.scroll_frame = ttk.Frame(self.canvas)
+
+        self.scroll_frame.bind(
+            "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
 
         for url in links_list:
             var = tk.IntVar(value=1)
             self.check_vars[url] = var
             shortname = os.path.basename(url)
-            chk = ttk.Checkbutton(self.frame, text=shortname, variable=var)
+            chk = ttk.Checkbutton(self.scroll_frame, text=shortname, variable=var)
             chk.pack(anchor="w")
 
-        ttk.Button(root, text="Run", command=self.run_download).pack(pady=10)
+        self.progress = ttk.Progressbar(root, mode="determinate", maximum=100)
+        self.progress.pack(fill="x", padx=10, pady=10)
+
+        self.run_button = ttk.Button(root, text="Run", command=self.start_thread)
+        self.run_button.pack(pady=10)
 
     def toggle_all(self):
         for var in self.check_vars.values():
             var.set(self.check_all_var.get())
+
+    def start_thread(self):
+        self.run_button.config(state=tk.DISABLED)
+        self.progress.config(value=0)
+        threading.Thread(target=self.run_download).start()
 
     def run_download(self):
         t2_date = self.date_var.get()
@@ -98,6 +125,7 @@ class ExcelDownloaderApp:
             datetime.strptime(t2_date, "%Y%m%d")
         except ValueError:
             messagebox.showerror("Invalid Date", "Enter date in yyyymmdd format.")
+            self.run_button.config(state=tk.NORMAL)
             return
 
         t3_date = workday(datetime.strptime(t2_date, "%Y%m%d").date(), -1).strftime("%Y%m%d")
@@ -105,17 +133,24 @@ class ExcelDownloaderApp:
         if os.path.exists(LOG_FILE):
             os.remove(LOG_FILE)
 
-        all_successful = True
-        for url, var in self.check_vars.items():
-            if var.get():
-                for prefix, d in zip(["T2", "T3"], [t2_date, t3_date]):
-                    df, attempted_url = download_and_parse_excel(url, d, prefix)
-                    if df is not None:
-                        table_name = f"{prefix}_{os.path.basename(url).replace('.xlsx','')}"
-                        save_to_db(df, table_name)
-                    else:
-                        all_successful = False
+        selected_links = [url for url, var in self.check_vars.items() if var.get()]
+        total = len(selected_links) * 2
+        step = 100 / total if total else 100
+        progress_value = 0
 
+        all_successful = True
+        for url in selected_links:
+            for prefix, d in zip(["T2", "T3"], [t2_date, t3_date]):
+                df, attempted_url = download_and_parse_excel(url, d, prefix)
+                if df is not None:
+                    table_name = f"{prefix}_{os.path.basename(url).replace('.xlsx','')}"
+                    save_to_db(df, table_name)
+                else:
+                    all_successful = False
+                progress_value += step
+                self.progress.config(value=progress_value)
+
+        self.run_button.config(state=tk.NORMAL)
         if all_successful:
             messagebox.showinfo("Success", "All data successfully loaded.")
         else:
