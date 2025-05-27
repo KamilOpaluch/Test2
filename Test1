@@ -61,7 +61,7 @@ class ExcelDownloaderApp:
         self.root = root
         self.root.title("Excel Downloader Tool")
         self.root.configure(bg="#2e2e2e")
-        self.root.geometry("600x500")
+        self.root.geometry("700x550")
 
         style = ttk.Style()
         style.theme_use("default")
@@ -69,34 +69,43 @@ class ExcelDownloaderApp:
         style.configure("TButton", background="#3c3f41", foreground="white", font=("Segoe UI", 10), padding=6)
         style.configure("TCheckbutton", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
         style.configure("Treeview", background="#2e2e2e", foreground="white", fieldbackground="#2e2e2e", font=("Segoe UI", 10))
+        style.map("Treeview", background=[("selected", "#3e3e3e")])
         style.configure("Treeview.Heading", background="#444", foreground="white", font=("Segoe UI", 10, "bold"))
         style.configure("Horizontal.TProgressbar", troughcolor="#444", background="#61afef", thickness=20)
 
-        today_t2 = get_business_day(-2)
-        self.date_var = tk.StringVar(value=today_t2)
-
+        self.date_var = tk.StringVar(value=get_business_day(-2))
         ttk.Label(root, text="Select T-2 Date (yyyymmdd):").pack(pady=5)
         self.date_entry = ttk.Entry(root, textvariable=self.date_var, width=20)
         self.date_entry.pack(pady=5)
 
-        self.check_vars = {}
-        self.check_all_var = tk.IntVar()
-        ttk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack(pady=5)
+        self.filter_var = tk.StringVar()
+        self.filter_var.trace("w", self.filter_reports)
 
-        self.tree = ttk.Treeview(root, columns=("filename", "select"), show="headings", selectmode="none", height=12)
+        filter_frame = ttk.Frame(root)
+        filter_frame.pack(fill="x", padx=10)
+
+        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 5))
+        self.filter_entry = ttk.Entry(filter_frame, textvariable=self.filter_var)
+        self.filter_entry.pack(side="left", fill="x", expand=True)
+
+        self.check_all_var = tk.IntVar()
+        self.check_all_cb = ttk.Checkbutton(filter_frame, text="All", variable=self.check_all_var, command=self.toggle_all)
+        self.check_all_cb.pack(side="right")
+
+        self.tree = ttk.Treeview(root, columns=("filename", "select"), show="headings", selectmode="none", height=15)
         self.tree.heading("filename", text="Report File")
         self.tree.heading("select", text="Select")
-        self.tree.column("filename", width=400)
+        self.tree.column("filename", width=500, anchor="w")
         self.tree.column("select", width=100, anchor="center")
         self.tree.pack(padx=10, pady=10, fill="both", expand=True)
 
+        self.check_vars = {}
         for url in links_list:
             var = tk.IntVar(value=1)
             self.check_vars[url] = var
-            filename = os.path.basename(url)
-            self.tree.insert("", "end", iid=url, values=(filename, ""))
 
-        self.update_checkboxes()
+        self.visible_links = links_list.copy()
+        self.populate_tree()
 
         self.progress = ttk.Progressbar(root, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=10, pady=10)
@@ -104,20 +113,37 @@ class ExcelDownloaderApp:
         self.run_button = ttk.Button(root, text="Run", command=self.start_thread)
         self.run_button.pack(pady=10)
 
-    def update_checkboxes(self):
-        for url in links_list:
-            checkbox = ttk.Checkbutton(self.tree, variable=self.check_vars[url])
-            self.tree.set(url, column="select", value=" ")
-            self.tree.item(url, tags=(url,))
-            self.tree.tag_bind(url, sequence="<Button-1>", callback=lambda e, u=url: self.toggle_checkbox(u))
+    def populate_tree(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
 
-    def toggle_checkbox(self, url):
-        self.check_vars[url].set(0 if self.check_vars[url].get() else 1)
+        for url in self.visible_links:
+            filename = os.path.basename(url)
+            self.tree.insert("", "end", iid=url, values=(filename, "✔" if self.check_vars[url].get() else ""))
+
+        self.tree.bind("<Button-1>", self.on_tree_click)
+
+    def on_tree_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region == "cell":
+            col = self.tree.identify_column(event.x)
+            row = self.tree.identify_row(event.y)
+            if col == "#2" and row:
+                url = row
+                current = self.check_vars[url].get()
+                self.check_vars[url].set(0 if current else 1)
+                self.populate_tree()
+
+    def filter_reports(self, *args):
+        filter_text = self.filter_var.get().lower()
+        self.visible_links = [url for url in links_list if filter_text in os.path.basename(url).lower()]
+        self.populate_tree()
 
     def toggle_all(self):
         new_val = self.check_all_var.get()
-        for var in self.check_vars.values():
-            var.set(new_val)
+        for url in self.visible_links:
+            self.check_vars[url].set(new_val)
+        self.populate_tree()
 
     def start_thread(self):
         self.run_button.config(state=tk.DISABLED)
@@ -138,7 +164,7 @@ class ExcelDownloaderApp:
         if os.path.exists(LOG_FILE):
             os.remove(LOG_FILE)
 
-        selected_links = [url for url, var in self.check_vars.items() if var.get()]
+        selected_links = [url for url in self.visible_links if self.check_vars[url].get()]
         total = len(selected_links) * 2
         step = 100 / total if total else 100
         progress_value = 0
