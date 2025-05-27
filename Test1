@@ -1,7 +1,6 @@
 import os
 import tkinter as tk
 from tkinter import ttk, messagebox
-from tkinter.filedialog import asksaveasfilename
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
@@ -10,11 +9,11 @@ from io import BytesIO
 from workdays import workday
 
 # === CONFIGURATION === #
-links_dict = {
-    "https://example.com/shared/{date}/report1.xlsx": "report1_df",
-    "https://example.com/shared/{date}/report2.xlsx": "report2_df",
-    # Add more links and variable names here
-}
+links_list = [
+    "https://example.com/shared/{date}/report1.xlsx",
+    "https://example.com/shared/{date}/report2.xlsx",
+    # Add more links here
+]
 
 DB_FILE = "report_data.db"
 LOG_FILE = "download_logs.txt"
@@ -22,7 +21,7 @@ LOG_FILE = "download_logs.txt"
 # === BUSINESS DAY FUNCTIONS === #
 def get_business_day(offset):
     today = datetime.today().date()
-    return workday(today, offset).strftime("%Y%d%m")
+    return workday(today, offset).strftime("%Y%m%d")
 
 # === DATA HANDLING === #
 def download_and_parse_excel(link, date_str, table_prefix):
@@ -57,25 +56,37 @@ class ExcelDownloaderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Excel Downloader Tool")
+        self.root.configure(bg="#2e2e2e")
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("TLabel", background="#2e2e2e", foreground="white")
+        style.configure("TButton", background="#444", foreground="white")
+        style.configure("TCheckbutton", background="#2e2e2e", foreground="white")
 
         today_t2 = get_business_day(-2)
         self.date_var = tk.StringVar(value=today_t2)
 
-        tk.Label(root, text="Select T-2 Date (yyyyddmm):").pack()
-        self.date_entry = tk.Entry(root, textvariable=self.date_var)
-        self.date_entry.pack()
+        ttk.Label(root, text="Select T-2 Date (yyyymmdd):").pack(pady=5)
+        self.date_entry = ttk.Entry(root, textvariable=self.date_var)
+        self.date_entry.pack(pady=5)
 
         self.check_vars = {}
         self.check_all_var = tk.IntVar()
 
-        tk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack()
+        ttk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack(pady=5)
 
-        for url in links_dict:
+        self.frame = ttk.Frame(root)
+        self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        for url in links_list:
             var = tk.IntVar(value=1)
             self.check_vars[url] = var
-            tk.Checkbutton(root, text=url, variable=var, wraplength=400).pack(anchor="w")
+            shortname = os.path.basename(url)
+            chk = ttk.Checkbutton(self.frame, text=shortname, variable=var)
+            chk.pack(anchor="w")
 
-        tk.Button(root, text="Run", command=self.run_download).pack(pady=10)
+        ttk.Button(root, text="Run", command=self.run_download).pack(pady=10)
 
     def toggle_all(self):
         for var in self.check_vars.values():
@@ -84,12 +95,12 @@ class ExcelDownloaderApp:
     def run_download(self):
         t2_date = self.date_var.get()
         try:
-            datetime.strptime(t2_date, "%Y%d%m")
+            datetime.strptime(t2_date, "%Y%m%d")
         except ValueError:
-            messagebox.showerror("Invalid Date", "Enter date in yyyyddmm format.")
+            messagebox.showerror("Invalid Date", "Enter date in yyyymmdd format.")
             return
 
-        t3_date = workday(datetime.strptime(t2_date, "%Y%d%m").date(), -1).strftime("%Y%d%m")
+        t3_date = workday(datetime.strptime(t2_date, "%Y%m%d").date(), -1).strftime("%Y%m%d")
 
         if os.path.exists(LOG_FILE):
             os.remove(LOG_FILE)
