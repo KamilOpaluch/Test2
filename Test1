@@ -68,6 +68,8 @@ class ExcelDownloaderApp:
         style.configure("TLabel", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
         style.configure("TButton", background="#3c3f41", foreground="white", font=("Segoe UI", 10), padding=6)
         style.configure("TCheckbutton", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
+        style.configure("Treeview", background="#2e2e2e", foreground="white", fieldbackground="#2e2e2e", font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#444", foreground="white", font=("Segoe UI", 10, "bold"))
         style.configure("Horizontal.TProgressbar", troughcolor="#444", background="#61afef", thickness=20)
 
         today_t2 = get_business_day(-2)
@@ -81,28 +83,20 @@ class ExcelDownloaderApp:
         self.check_all_var = tk.IntVar()
         ttk.Checkbutton(root, text="Select/Deselect All", variable=self.check_all_var, command=self.toggle_all).pack(pady=5)
 
-        self.table_frame = ttk.Frame(root)
-        self.table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        self.canvas = tk.Canvas(self.table_frame, bg="#2e2e2e")
-        self.scrollbar = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.canvas.yview)
-        self.scroll_frame = ttk.Frame(self.canvas)
-
-        self.scroll_frame.bind(
-            "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
-
-        self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
+        self.tree = ttk.Treeview(root, columns=("filename", "select"), show="headings", selectmode="none", height=12)
+        self.tree.heading("filename", text="Report File")
+        self.tree.heading("select", text="Select")
+        self.tree.column("filename", width=400)
+        self.tree.column("select", width=100, anchor="center")
+        self.tree.pack(padx=10, pady=10, fill="both", expand=True)
 
         for url in links_list:
             var = tk.IntVar(value=1)
             self.check_vars[url] = var
-            shortname = os.path.basename(url)
-            chk = ttk.Checkbutton(self.scroll_frame, text=shortname, variable=var)
-            chk.pack(anchor="w")
+            filename = os.path.basename(url)
+            self.tree.insert("", "end", iid=url, values=(filename, ""))
+
+        self.update_checkboxes()
 
         self.progress = ttk.Progressbar(root, mode="determinate", maximum=100)
         self.progress.pack(fill="x", padx=10, pady=10)
@@ -110,9 +104,20 @@ class ExcelDownloaderApp:
         self.run_button = ttk.Button(root, text="Run", command=self.start_thread)
         self.run_button.pack(pady=10)
 
+    def update_checkboxes(self):
+        for url in links_list:
+            checkbox = ttk.Checkbutton(self.tree, variable=self.check_vars[url])
+            self.tree.set(url, column="select", value=" ")
+            self.tree.item(url, tags=(url,))
+            self.tree.tag_bind(url, sequence="<Button-1>", callback=lambda e, u=url: self.toggle_checkbox(u))
+
+    def toggle_checkbox(self, url):
+        self.check_vars[url].set(0 if self.check_vars[url].get() else 1)
+
     def toggle_all(self):
+        new_val = self.check_all_var.get()
         for var in self.check_vars.values():
-            var.set(self.check_all_var.get())
+            var.set(new_val)
 
     def start_thread(self):
         self.run_button.config(state=tk.DISABLED)
