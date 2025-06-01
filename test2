@@ -1,0 +1,122 @@
+import os
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+import pandas as pd
+import sqlite3
+import cx_Oracle
+from datetime import datetime
+from workdays import workday
+
+# === BUSINESS DAY FUNCTIONS === #
+def get_business_day(offset):
+    today = datetime.today().date()
+    return workday(today, offset).strftime("%Y%m%d")
+
+# === LOAD CREDENTIALS === #
+def load_credentials(file_name="crmr_cred.txt"):
+    if not os.path.exists(file_name):
+        raise FileNotFoundError(f"{file_name} not found.")
+    with open(file_name, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    creds = dict(line.split("=", 1) for line in lines if "=" in line)
+    return creds
+
+# === PARSE QUERIES === #
+def load_queries(file_name="crmr_queries.txt"):
+    if not os.path.exists(file_name):
+        raise FileNotFoundError(f"{file_name} not found.")
+    queries = {}
+    current_name = None
+    current_sql = []
+    with open(file_name, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "-" in line and not line.endswith(";"):
+                if current_name and current_sql:
+                    queries[current_name] = " ".join(current_sql)
+                    current_sql = []
+                parts = line.split("-", 1)
+                current_name = parts[0].strip()
+                current_sql.append(parts[1].strip())
+            else:
+                current_sql.append(line)
+        if current_name and current_sql:
+            queries[current_name] = " ".join(current_sql)
+    return queries
+
+# === RUN QUERIES === #
+def run_queries_and_store(date_str):
+    creds = load_credentials()
+    dsn = cx_Oracle.makedsn(creds["host"], creds["port"], service_name=creds["service"])
+    conn = cx_Oracle.connect(user=creds["user"], password=creds["password"], dsn=dsn)
+    sqlite_conn = sqlite3.connect("CRMR_Data.db")
+
+    queries = load_queries()
+    for name, sql in queries.items():
+        try:
+            formatted_sql = sql.format(date=date_str) if "{date}" in sql else sql
+            df = pd.read_sql(formatted_sql, conn)
+            df.to_sql(name, sqlite_conn, if_exists="replace", index=False)
+        except Exception as e:
+            print(f"Failed to execute query '{name}': {e}")
+
+    conn.close()
+    sqlite_conn.close()
+
+# === GUI === #
+class CRMRQueryApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("CRMR Oracle Query Tool")
+        self.root.configure(bg="#2e2e2e")
+        self.root.geometry("600x200")
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("TLabel", background="#2e2e2e", foreground="white", font=("Segoe UI", 10))
+        style.configure("TButton", background="#3c3f41", foreground="white", font=("Segoe UI", 10), padding=6)
+        style.configure("Horizontal.TProgressbar", troughcolor="#444", background="#61afef", thickness=20)
+
+        self.date_var = tk.StringVar(value=get_business_day(-2))
+        ttk.Label(root, text="Select T-2 Date (yyyymmdd):").pack(pady=10)
+        self.date_entry = ttk.Entry(root, textvariable=self.date_var, width=20)
+        self.date_entry.pack(pady=5)
+
+        self.run_button = ttk.Button(root, text="Run Queries", command=self.start_thread)
+        self.run_button.pack(pady=10)
+
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress.pack(fill="x", padx=10, pady=10)
+
+    def start_thread(self):
+        self.run_button.config(state=tk.DISABLED)
+        self.progress.start()
+        threading.Thread(target=self.run_queries).start()
+
+    def run_queries(self):
+        t2_date = self.date_var.get()
+        try:
+            datetime.strptime(t2_date, "%Y%m%d")
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Enter date in yyyymmdd format.")
+            self.run_button.config(state=tk.NORMAL)
+            self.progress.stop()
+            return
+
+        try:
+            run_queries_and_store(t2_date)
+            messagebox.showinfo("Success", "All queries executed and data stored.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+        self.run_button.config(state=tk.NORMAL)
+        self.progress.stop()
+
+# === MAIN === #
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = CRMRQueryApp(root)
+    root.mainloop()
