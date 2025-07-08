@@ -2,32 +2,39 @@ import pandas as pd
 import re
 
 # Load Excel file and specific sheet
-file_path = r'C:\Users\<YourUsername>\Documents\BRD_Queries_Appendix.xlsx'  # Update with your actual username if needed
+file_path = r'C:\Users\<YourUsername>\Documents\BRD_Queries_Appendix.xlsx'  # Update path
 sheet_name = 'CGML_Backtesting'
 
-# Load the sheet into a DataFrame
+# Load sheet
 df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
 
-# Find the column with the most rows starting with "SELECT"
-select_counts = df.apply(lambda col: col.dropna().astype(str).str.strip().str.upper().str.startswith('SELECT').sum())
+# Clean all cells to string
+df_cleaned = df.applymap(lambda x: str(x).strip() if pd.notnull(x) else "")
+
+# Detect the column with most entries starting with 'SELECT' (ignore case, allow whitespace)
+def starts_with_select(val):
+    return bool(re.match(r'^\s*select\b', val, re.IGNORECASE))
+
+select_counts = df_cleaned.apply(lambda col: col.apply(starts_with_select).sum())
 target_column = select_counts.idxmax()
 
-# Filter rows in that column that start with "SELECT"
-query_series = df[target_column].dropna().astype(str)
-query_series = query_series[query_series.str.strip().str.upper().str.startswith("SELECT")]
+# Filter rows in that column that start with SELECT
+query_series = df_cleaned[target_column]
+query_series = query_series[query_series.apply(starts_with_select)].reset_index(drop=True)
 
-# Function to extract column names in brackets [] and tables after FROM
+# Extract [columns] and table names after FROM (including joins, subqueries simplified)
 def extract_info(query):
     columns = re.findall(r'\[(.*?)\]', query)
-    tables = re.findall(r'\bFROM\s+([\[\]A-Za-z0-9_\.]+)', query, re.IGNORECASE)
-    return columns, tables
+    from_clauses = re.findall(r'\bFROM\s+([^\s;\n\r]+)', query, re.IGNORECASE)
+    return columns, from_clauses
 
-# Apply function and store results
+# Apply extraction
 results = query_series.apply(lambda q: pd.Series(extract_info(q), index=['Columns', 'Tables']))
 
-# Combine original query and the parsed results
-final_df = pd.concat([query_series.reset_index(drop=True), results], axis=1)
+# Final DataFrame
+final_df = pd.concat([query_series, results], axis=1)
 final_df.columns = ['Query', 'Columns', 'Tables']
 
-# Show results
+# Display or export
 print(final_df)
+# Optionally: final_df.to_excel("parsed_queries.xlsx", index=False)
