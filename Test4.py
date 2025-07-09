@@ -1,40 +1,58 @@
-import pandas as pd
+import os
 import re
+import pandas as pd
+from datetime import datetime
+from collections import defaultdict
 
-# Load Excel file and specific sheet
-file_path = r'C:\Users\<YourUsername>\Documents\BRD_Queries_Appendix.xlsx'  # Update path
-sheet_name = 'CGML_Backtesting'
+# Define folders
+base_folder = os.path.join(os.path.expanduser('~'), 'Documents', 'QE_Proxy')
+output_folder = os.path.join(base_folder, 'Processed')
+os.makedirs(output_folder, exist_ok=True)
 
-# Load sheet
-df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
+# Regex pattern to match filenames
+pattern = re.compile(r"^PROXY_(.+?)_(.+?)_(.+?)_(\d{8})\.xlsx$")
 
-# Clean all cells to string
-df_cleaned = df.applymap(lambda x: str(x).strip() if pd.notnull(x) else "")
+# Store grouped data
+grouped_files = defaultdict(list)
+unmatched_files = []
 
-# Detect the column with most entries starting with 'SELECT' (ignore case, allow whitespace)
-def starts_with_select(val):
-    return bool(re.match(r'^\s*select\b', val, re.IGNORECASE))
+# Walk through the folder and collect files
+for filename in os.listdir(base_folder):
+    if filename.endswith('.xlsx') and filename.startswith('PROXY_'):
+        match = pattern.match(filename)
+        if match:
+            name, typ, typ2, date_str = match.groups()
+            group_key = (name, typ, typ2)
+            file_path = os.path.join(base_folder, filename)
+            grouped_files[group_key].append((file_path, date_str))
 
-select_counts = df_cleaned.apply(lambda col: col.apply(starts_with_select).sum())
-target_column = select_counts.idxmax()
+# Process each group
+for (name, typ, typ2), files in grouped_files.items():
+    if len(files) < 2:
+        unmatched_files.append(files[0][0])  # only one file in group
+        continue
 
-# Filter rows in that column that start with SELECT
-query_series = df_cleaned[target_column]
-query_series = query_series[query_series.apply(starts_with_select)].reset_index(drop=True)
+    all_data = []
+    for file_path, date_str in files:
+        try:
+            df = pd.read_excel(file_path)
+            date_formatted = datetime.strptime(date_str, "%Y%m%d").strftime("%m/%d/%Y")
+            df.insert(0, 'Date', date_formatted)
+            all_data.append(df)
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
 
-# Extract [columns] and table names after FROM (including joins, subqueries simplified)
-def extract_info(query):
-    columns = re.findall(r'\[(.*?)\]', query)
-    from_clauses = re.findall(r'\bFROM\s+([^\s;\n\r]+)', query, re.IGNORECASE)
-    return columns, from_clauses
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        output_file = os.path.join(output_folder, f"APPENDED_{name}_{typ}_{typ2}.xlsx")
+        combined_df.to_excel(output_file, index=False)
 
-# Apply extraction
-results = query_series.apply(lambda q: pd.Series(extract_info(q), index=['Columns', 'Tables']))
+# Report unmatched files
+if unmatched_files:
+    print("\nSkipped the following files due to no matching pair:")
+    for f in unmatched_files:
+        print(f"- {os.path.basename(f)}")
+else:
+    print("\nAll files were matched and processed.")
 
-# Final DataFrame
-final_df = pd.concat([query_series, results], axis=1)
-final_df.columns = ['Query', 'Columns', 'Tables']
-
-# Display or export
-print(final_df)
-# Optionally: final_df.to_excel("parsed_queries.xlsx", index=False)
+print("\nProcessing complete. Appended files saved in 'Processed' subfolder.")
