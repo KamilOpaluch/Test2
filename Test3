@@ -1,3 +1,49 @@
+import os
+from datetime import datetime
+import pandas as pd
+from pandas.tseries.offsets import BMonthEnd
+import requests
+from io import BytesIO
+
+# === CONFIGURATION ===
+LINKS_FILE = "links.txt"
+SAVE_DIR = "downloaded_reports"
+SUMMARY_FILE = "report_summary.xlsx"
+SELECTION_SHEET = "SelectionCriteria"
+SKIP_ROWS = 7
+
+# === UTILS ===
+def get_last_business_day_of_previous_month():
+    today = pd.Timestamp.today()
+    return (today - BMonthEnd(1)).strftime("%Y%m%d")
+
+def get_second_last_business_day_of_previous_month():
+    first_of_this_month = pd.Timestamp.today().replace(day=1)
+    second_last = first_of_this_month - BMonthEnd(2)
+    return second_last.strftime("%Y%m%d")
+
+def load_links(file_path):
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"{file_path} not found.")
+    with open(file_path, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+
+def download_excel(link, date_str):
+    url = link.format(date=date_str)
+    response = requests.get(url, verify=False)
+    response.raise_for_status()
+    return pd.ExcelFile(BytesIO(response.content)), url
+
+def save_file(content, path):
+    with open(path, "wb") as f:
+        f.write(content)
+
+def read_selection_criteria(xls):
+    if SELECTION_SHEET not in xls.sheet_names:
+        return None
+    return pd.read_excel(xls, sheet_name=SELECTION_SHEET, skiprows=SKIP_ROWS)
+
+# === NORMALIZATION AND COMPARISON ===
 def normalize_df(df):
     df = df.copy()
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
@@ -11,7 +57,7 @@ def find_differences(df1, df2):
     if df1.shape != df2.shape:
         diffs.append(f"Shape mismatch: {df1.shape} vs {df2.shape}")
         return diffs
-    
+
     for col in df1.columns:
         if col not in df2.columns:
             diffs.append(f"Column '{col}' missing in second DataFrame")
@@ -36,9 +82,65 @@ def compare_criteria(df1, df2, report_name=None):
         return False
 
     differences = find_differences(df1_norm, df2_norm)
-    print(f"\nDifferences in {report_name}:")
-    for diff in differences[:10]:  # limit to avoid flooding
+    print(f"\nDifferences in {report_name or 'Unknown Report'}:")
+    for diff in differences[:10]:  # limit to 10
         print(" -", diff)
     if len(differences) > 10:
         print(f" - ...and {len(differences) - 10} more differences.")
     return True
+
+# === MAIN FUNCTION ===
+def process_reports():
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    date_current = get_last_business_day_of_previous_month()
+    date_previous = get_second_last_business_day_of_previous_month()
+
+    links = load_links(LINKS_FILE)
+    summary_logs = []
+    criteria_sheets = {}
+
+    for link in links:
+        report_name = os.path.basename(link).split(".")[0]  # moved outside try block
+        try:
+            # Download current
+            xls_current, url_current = download_excel(link, date_current)
+            current_filename = f"{report_name}_{date_current}.xlsx"
+            save_file(requests.get(url_current, verify=False).content, os.path.join(SAVE_DIR, current_filename))
+            df_current = read_selection_criteria(xls_current)
+            criteria_sheets[f"{report_name}_{date_current}"] = df_current
+
+            # Try download previous
+            previous_filename = f"{report_name}_{date_previous}.xlsx"
+            previous_path = os.path.join(SAVE_DIR, previous_filename)
+
+            if os.path.exists(previous_path):
+                xls_previous = pd.ExcelFile(previous_path)
+                df_previous = read_selection_criteria(xls_previous)
+                changed = compare_criteria(df_current, df_previous, report_name)
+                log_msg = f"{report_name}: {'CHANGED' if changed else 'NO CHANGE'} in SelectionCriteria"
+                criteria_sheets[f"{report_name}_{date_previous}"] = df_previous
+            else:
+                log_msg = f"{report_name}: No previous file to compare"
+
+            summary_logs.append(log_msg)
+
+        except Exception as e:
+            summary_logs.append(f"{report_name}: ERROR - {str(e)}")
+
+    # Save summary and sheets
+    with pd.ExcelWriter(SUMMARY_FILE, engine="openpyxl") as writer:
+        pd.DataFrame(summary_logs, columns=["Report Changes"]).to_excel(writer, sheet_name="Summary", index=False)
+
+        seen_titles = set()
+        for sheet_name, df in criteria_sheets.items():
+            if df is not None:
+                title = sheet_name[:31]
+                counter = 1
+                while title in seen_titles:
+                    title = (sheet_name[:28] + f"_{counter}")[:31]
+                    counter += 1
+                seen_titles.add(title)
+                df.to_excel(writer, sheet_name=title, index=False)
+
+# === RUN ===
+process_reports()
