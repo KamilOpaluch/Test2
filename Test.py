@@ -1,4 +1,5 @@
-# pvalue_scraper_gui.py
+# pvalue_scraper_gui_hybrid.py
+import os
 import time
 import threading
 from datetime import datetime
@@ -11,29 +12,68 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
-# ------------ CONFIG ------------
-URL = "https://prod.marketrisk.citigroup.net/igm/#/FinancePL"  # adjust if your path differs
+# ----------------- CONFIG -----------------
+URL = "https://prod.marketrisk.citigroup.net/igm/#/FinancePL"
 PAGE_LOAD_TIMEOUT = 120
 TABLE_RENDER_TIMEOUT = 90
-SCROLL_PAUSE = 0.8
-MAX_SCROLLS = 200
 
-# ------------ SELENIUM HELPERS ------------
-def start_driver():
+# 1) Local ChromeDriver fallback path (edit this if WDM can't reach internet)
+#    Windows example: r"C:\tools\chromedriver\chromedriver.exe"
+#    Linux/Mac: "/usr/local/bin/chromedriver"
+CHROMEDRIVER_PATH = r"C:\tools\chromedriver\chromedriver.exe"
+
+# 2) (Optional) Corp proxy settings for webdriver-manager & requests
+#    Uncomment and fill if you have a proxy (user:pass optional)
+# os.environ["HTTP_PROXY"]  = "http://user:pass@proxy.host:port"
+# os.environ["HTTPS_PROXY"] = "http://user:pass@proxy.host:port"
+# os.environ["WDM_PROXY"]   = os.environ["HTTPS_PROXY"]  # webdriver-manager uses this
+# os.environ["NO_PROXY"]    = "localhost,127.0.0.1"
+
+# 3) Prefer webdriver-manager when possible
+PREFER_WDM = True
+
+# -------------- DRIVER STARTUP --------------
+def start_driver(log=print):
+    """
+    Try webdriver-manager first (with proxy if provided). On failure, fall back to CHROMEDRIVER_PATH.
+    """
     opts = Options()
-    # Keep visible for SSO; uncomment if headless is allowed in your environment:
-    # opts.add_argument("--headless=new")
+    # opts.add_argument("--headless=new")  # keep visible for SSO; enable only if allowed
     opts.add_argument("--start-maximized")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
-    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-    return driver
 
+    # Try webdriver-manager
+    if PREFER_WDM:
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            # cache_valid_range keeps existing cached version for N days (avoids re-downloading)
+            driver_path = ChromeDriverManager(cache_valid_range=30).install()
+            log(f"Using webdriver-manager driver at: {driver_path}")
+            return webdriver.Chrome(service=Service(driver_path), options=opts)
+        except Exception as e:
+            log(f"webdriver-manager failed ({e.__class__.__name__}: {e}). Falling back to local driver…")
+
+    # Fallback: local ChromeDriver
+    if not CHROMEDRIVER_PATH or not Path(CHROMEDRIVER_PATH).exists():
+        raise RuntimeError(
+            "Could not reach host to auto-install ChromeDriver and fallback CHROMEDRIVER_PATH is not set or not found.\n"
+            "Fix one of these:\n"
+            "  • Set proxy env vars and allow webdriver-manager to download, OR\n"
+            "  • Download matching ChromeDriver manually and set CHROMEDRIVER_PATH."
+        )
+    try:
+        log(f"Using local ChromeDriver at: {CHROMEDRIVER_PATH}")
+        return webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=opts)
+    except WebDriverException as e:
+        raise RuntimeError(
+            f"Failed to start Chrome with local driver:\n{CHROMEDRIVER_PATH}\n\n"
+            "Check that the path is correct and ChromeDriver major version matches your Chrome."
+        ) from e
+
+# -------------- PAGE HELPERS --------------
 def try_find(ctx, by, sel, many=False):
     try:
         return (ctx.find_elements if many else ctx.find_element)(by, sel)
@@ -129,7 +169,7 @@ def set_page_size_all(driver):
             except Exception:
                 pass
 
-    # 3) Last resort: click any visible 'ALL'
+    # 3) Last resort: visible 'ALL'
     for a in try_find(driver, By.XPATH, "//*[normalize-space(.)='ALL']", many=True):
         try:
             if a.is_displayed():
@@ -205,7 +245,7 @@ def run_scrape(yyyymm: str, output_path: Path, log=print):
     if not (len(yyyymm) == 6 and yyyymm.isdigit()):
         raise ValueError("Year-Month must be YYYYMM, e.g. 202504.")
 
-    driver = start_driver()
+    driver = start_driver(log=log)
     try:
         driver.get(URL)
         # Wait for shell/table or pause for SSO
@@ -233,7 +273,7 @@ def run_scrape(yyyymm: str, output_path: Path, log=print):
         except Exception:
             pass
 
-# -------------------- TKINTER GUI --------------------
+# ---------------- TKINTER GUI ----------------
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
