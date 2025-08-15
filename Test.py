@@ -1,1 +1,49 @@
-javascript:(function(){function t(e){var t=document.createElement("a");t.href=URL.createObjectURL(e),t.download="pvalue.xlsx",document.body.appendChild(t),t.click(),document.body.removeChild(t)}function e(e){for(var t="",n=0;n<e.length;n++){for(var o=0;o<e[n].length;o++)t+='"'+String(e[n][o]||"").replace(/"/g,'""')+'"'+(o<e[n].length-1?",":"");t+="\r\n"}return t}var n=document.querySelector("table");if(!n){alert("No table found!");return}var o=[...n.querySelectorAll("tr")].map(function(e){return[...e.querySelectorAll("th,td")].map(function(e){return e.innerText.trim()})});var r=e(o),a=new Blob([r],{type:"text/csv;charset=utf-8;"});if(window.XLSX){var i=XLSX.utils.aoa_to_sheet(o),c=XLSX.utils.book_new();XLSX.utils.book_append_sheet(c,i,"Sheet1");var l=XLSX.write(c,{bookType:"xlsx",type:"array"});t(new Blob([l],{type:"application/octet-stream"}))}else{t(a)}})();
+javascript:(function(){
+function downloadXLSX(data){
+ if(window.XLSX){
+  var ws = XLSX.utils.aoa_to_sheet(data);
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  var wbout = XLSX.write(wb, {bookType:"xlsx", type:"array"});
+  var blob = new Blob([wbout], {type:"application/octet-stream"});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = "pvalue.xlsx";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+ } else {
+  alert("SheetJS not found. Loading it now, click the bookmarklet again in 2 seconds...");
+  var s = document.createElement("script");
+  s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  document.head.appendChild(s);
+ }
+}
+function scrapeTable(){
+ var data=[];
+ var table=document.querySelector("table");
+ if(table){
+  var rows=table.querySelectorAll("tr");
+  rows.forEach(function(r){
+   var cells=r.querySelectorAll("th,td");
+   var row=[]; cells.forEach(function(c){row.push(c.innerText.trim())});
+   data.push(row);
+  });
+  return data;
+ }
+ var grid=document.querySelector("[role='grid']");
+ if(grid){
+  var headers=[...grid.querySelectorAll("[role='columnheader']")].map(h=>h.innerText.trim());
+  if(headers.length) data.push(headers);
+  var rows=[...grid.querySelectorAll("[role='row']")].filter(r=>!r.querySelector("[role='columnheader']"));
+  rows.forEach(function(r){
+    var cells=[...r.querySelectorAll("[role='gridcell'],[role='cell']")].map(c=>c.innerText.trim());
+    data.push(cells);
+  });
+  return data;
+ }
+ return null;
+}
+var data=scrapeTable();
+if(!data||!data.length){alert("No table or grid found!");return;}
+downloadXLSX(data);
+})();
