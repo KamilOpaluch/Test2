@@ -62,7 +62,7 @@ function collect(){
     return null
 }
 
-// NEW: header fix
+// header fix
 function fixHeaders(headerRow){
     var uniqueHeaders = [];
     for (var i=0; i<headerRow.length; ){
@@ -112,10 +112,13 @@ function exportData(A){
 }
 
 var data=collect();
+console.log("Collected rows:", data ? data.length : 0);
 if(!data){
     alert("No table found on this page. Try scrolling the grid into view, or expanding rows.");
     return;
 }
-data[0] = fixHeaders(data[0]); // only adjust header row
+if (data.length && data[0]) {
+    data[0] = fixHeaders(data[0]);
+}
 exportData(data);
 })();
