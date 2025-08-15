@@ -4,6 +4,7 @@ function dl(blob,name){var a=document.createElement("a");a.href=URL.createObject
 function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}
 function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}
 function collect(){
+    /* 1) Native <table> */
     var t=document.querySelector("table");
     if(t){
         var data=[];
@@ -12,6 +13,7 @@ function collect(){
         });
         return data.filter(r=>r.length)
     }
+    /* 2) ARIA grid */
     var grid=document.querySelector('[role="grid"]');
     if(grid){
         var data2=[],heads=Array.from(grid.querySelectorAll('[role="columnheader"]')).map(h=>S(h.innerText));
@@ -23,6 +25,7 @@ function collect(){
         });
         if(data2.length>0)return data2
     }
+    /* 3) Generic div grid: role=row + div cells / tabindex */
     var rows=Array.from(document.querySelectorAll('[role="row"]'));
     if(rows.length){
         var container=pickBiggestContainer(rows);
@@ -41,6 +44,7 @@ function collect(){
             if(data3.length>0)return data3
         }
     }
+    /* 4) Last-resort: dense div grid under a scroller */
     var scrollers=Array.from(document.querySelectorAll('div,section')).filter(el=>{
         var st=getComputedStyle(el);
         return /(auto|scroll)/.test(st.overflow+st.overflowY+st.overflowX)
@@ -66,6 +70,26 @@ function exportData(A){
         alert("No table-like data found.");
         return;
     }
+
+    /* === HEADER CLEANUP: remove 4 duplicates for each header cell === */
+    if (A.length > 0 && A[0].length > 0) {
+        let firstRow = A[0];
+        let cleaned = [];
+        for (let i = 0; i < firstRow.length; ) {
+            let current = firstRow[i];
+            cleaned.push(current);
+            let skipCount = 0;
+            while (skipCount < 4 && firstRow[i + 1] === current) {
+                i++;
+                skipCount++;
+            }
+            i++;
+        }
+        A[0] = cleaned;
+        // Also trim all rows to match cleaned header length
+        A = A.map(r => r.slice(0, cleaned.length));
+    }
+
     var width=Math.max.apply(null,A.map(r=>r.length));
     A=A.map(r=>r.concat(Array(Math.max(0,width-r.length)).fill("")));
     function doXLSX(){
