@@ -1,3 +1,12 @@
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.webdriver import WebDriver
+from selenium.webdriver.chrome.options import Options
+
+driver = webdriver.Chrome(service=Service(), options=opts)
+
+
+
+
 import os
 import time
 import threading
