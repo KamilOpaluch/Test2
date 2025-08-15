@@ -1,1 +1,78 @@
-javascript:(function(){function S(s){return s==null?"":String(s).replace(/\s+/g," ").trim()}function dl(blob,name){var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}function collect(){var t=document.querySelector("table");if(t){var data=[];t.querySelectorAll("tr").forEach(tr=>{data.push(Array.from(tr.querySelectorAll("th,td")).map(td=>S(td.innerText))) });return data.filter(r=>r.length)}var grid=document.querySelector('[role="grid"]');if(grid){var data2=[],heads=Array.from(grid.querySelectorAll('[role="columnheader"]')).map(h=>S(h.innerText));if(heads.length)data2.push(heads);Array.from(grid.querySelectorAll('[role="row"]')).forEach(r=>{if(r.querySelector('[role="columnheader"]'))return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"]')).map(c=>S(c.innerText));if(cells.length)data2.push(cells)});if(data2.length>0)return data2}var rows=Array.from(document.querySelectorAll('[role="row"]'));if(rows.length){var container=pickBiggestContainer(rows);if(container){var hdr=Array.from(container.querySelectorAll('[role="row"]')).find(r=>r.querySelector('[role="columnheader"]'));var data3=[];if(hdr){var h=Array.from(hdr.querySelectorAll('[role="columnheader"],div,span')).map(x=>S(x.innerText)).filter(Boolean);if(h.length)data3.push(h)}Array.from(container.querySelectorAll('[role="row"]')).forEach(r=>{if(r===hdr)return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText));if(cells.some(v=>v!==""))data3.push(cells)});if(data3.length>0)return data3}}var scrollers=Array.from(document.querySelectorAll('div,section')).filter(el=>{var st=getComputedStyle(el);return /(auto|scroll)/.test(st.overflow+st.overflowY+st.overflowX)});for(const sc of scrollers){var rows2=Array.from(sc.querySelectorAll('div[tabindex], [data-row-index]'));if(rows2.length>5){var data4=[];rows2.forEach(r=>{var cells=Array.from(r.children).map(c=>S(c.innerText));if(!cells.length){cells=Array.from(r.querySelectorAll('div,span')).map(c=>S(c.innerText))}if(cells.length)data4.push(cells)});if(data4.length>0)return data4}}return null}function tidyHeaderRowOnly(A,repeat){if(!A||!A.length)return A;var h=A[0].slice();var rep=repeat||5;for(var i=0;i<h.length;i++){if(i%rep!==0)h[i]="";}A[0]=h;return A}function exportData(A){if(!A||!A.length){alert("No table-like data found.");return}A=tidyHeaderRowOnly(A,5);function doXLSX(){try{var ws=XLSX.utils.aoa_to_sheet(A);var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Sheet1");var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});dl(new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),"pvalue.xlsx")}catch(e){console.warn("XLSX failed, falling back to CSV:",e);dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")}}if(window.XLSX){doXLSX()}else{var s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=doXLSX;s.onerror=function(){dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")};document.head.appendChild(s)}}var data=collect();if(!data){alert("No table found on this page.");return}exportData(data);})();
+javascript:(function(){function S(s){return s==null?"":String(s).replace(/\s+/g," ").trim()}
+function dl(blob,name){var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
+function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}
+function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}
+function collect(){var t=document.querySelector("table");if(t){var data=[];t.querySelectorAll("tr").forEach(tr=>{data.push(Array.from(tr.querySelectorAll("th,td")).map(td=>S(td.innerText)))});return data.filter(r=>r.length)}
+var grid=document.querySelector('[role="grid"]');if(grid){var data2=[],heads=Array.from(grid.querySelectorAll('[role="columnheader"]')).map(h=>S(h.innerText));if(heads.length)data2.push(heads);Array.from(grid.querySelectorAll('[role="row"]')).forEach(r=>{if(r.querySelector('[role="columnheader"]'))return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"]')).map(c=>S(c.innerText));if(cells.length)data2.push(cells)});if(data2.length>0)return data2}
+var rows=Array.from(document.querySelectorAll('[role="row"]'));if(rows.length){var container=pickBiggestContainer(rows);if(container){var hdr=Array.from(container.querySelectorAll('[role="row"]')).find(r=>r.querySelector('[role="columnheader"]'));var data3=[];if(hdr){var h=Array.from(hdr.querySelectorAll('[role="columnheader"],div,span')).map(x=>S(x.innerText)).filter(Boolean);if(h.length)data3.push(h)}Array.from(container.querySelectorAll('[role="row"]')).forEach(r=>{if(r===hdr)return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText));if(cells.some(v=>v!==""))data3.push(cells)});if(data3.length>0)return data3}}
+var scrollers=Array.from(document.querySelectorAll('div,section')).filter(el=>{var st=getComputedStyle(el);return /(auto|scroll)/.test(st.overflow+st.overflowY+st.overflowX)});for(const sc of scrollers){var rows2=Array.from(sc.querySelectorAll('div[tabindex],[data-row-index]'));if(rows2.length>5){var data4=[];rows2.forEach(r=>{var cells=Array.from(r.children).map(c=>S(c.innerText));if(!cells.length){cells=Array.from(r.querySelectorAll('div,span')).map(c=>S(c.innerText))}if(cells.length)data4.push(cells)});if(data4.length>0)return data4}}
+return null}
+
+/* keep your original header-blanking step */
+function tidyHeaderRowOnly(A,repeat){if(!A||!A.length)return A;var h=A[0].slice();var rep=repeat||5;for(var i=0;i<h.length;i++){if(i%rep!==0)h[i]="";}A[0]=h;return A}
+
+/* --- NEW helpers to treat hidden junk as empty --- */
+function norm(v){return S(String(v??"").replace(/\u00A0/g," ").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/[\x00-\x1F\x7F]/g,""))}
+function hasLetter(s){return /[\p{L}]/u.test(s)}         // legit header = has a letter
+function hasAlphaNum(s){return /[\p{L}\p{N}]/u.test(s)}  // visible data = letter or digit
+
+/* slide only legit headers left across columns whose data are truly empty (after cleanup) */
+function compactHeadersSmart(A){
+  if(!A||A.length<2)return A;
+  var n=A[0].length, rows=A.slice(1);
+
+  // columns that are "empty" even if they contain hidden metadata
+  var emptyCol=new Array(n).fill(true);
+  for(var r=0;r<rows.length;r++){
+    var row=rows[r];
+    for(var c=0;c<n;c++){
+      if(hasAlphaNum(norm(row[c]))){ emptyCol[c]=false; }
+    }
+  }
+
+  // move headers that contain letters to the left over empty columns only
+  var h=A[0].map(norm);
+  var newH=new Array(n).fill("");
+  var nextFree=0;
+  for(var c=0;c<n;c++){
+    if(hasLetter(h[c])){
+      while(nextFree<c && (emptyCol[nextFree]===false || newH[nextFree]!=="" )) nextFree++;
+      if(nextFree<c && emptyCol[nextFree]===true && newH[nextFree]===""){
+        newH[nextFree]=h[c]; nextFree++;
+      }else{
+        newH[c]=h[c];
+        if(emptyCol[c]===true) nextFree=c+1;
+      }
+    }
+  }
+  A[0]=newH; return A;
+}
+
+function exportData(A){
+  if(!A||!A.length){alert("No table-like data found.");return}
+  A=tidyHeaderRowOnly(A,5);        /* your output preserved */
+  A=compactHeadersSmart(A);        /* then compact left safely */
+
+  function doXLSX(){try{
+    var ws=XLSX.utils.aoa_to_sheet(A);
+    var wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Sheet1");
+    var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
+    dl(new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),"pvalue.xlsx")
+  }catch(e){
+    console.warn("XLSX failed, falling back to CSV:",e);
+    dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")
+  }}
+  if(window.XLSX){doXLSX()}else{
+    var s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload=doXLSX;
+    s.onerror=function(){dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")};
+    document.head.appendChild(s)
+  }
+}
+
+var data=collect();
+if(!data){alert("No table found on this page.");return}
+exportData(data);
+})();
