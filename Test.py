@@ -3,7 +3,6 @@ function S(s){return s==null?"":String(s).replace(/\s+/g," ").trim()}
 function dl(blob,name){var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
 function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}
 function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}
-
 function collect(){
     var t=document.querySelector("table");
     if(t){
@@ -36,8 +35,8 @@ function collect(){
             }
             Array.from(container.querySelectorAll('[role="row"]')).forEach(r=>{
                 if(r===hdr)return;
-                var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText));
-                if(cells.some(v=>v!==""))data3.push(cells)
+                var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText)).filter((v,i,arr)=>!(arr.length===1 && v===""));
+                if(cells.length>1||(cells.length===1 && S(cells[0])!==""))data3.push(cells)
             });
             if(data3.length>0)return data3
         }
@@ -51,9 +50,9 @@ function collect(){
         if(rows2.length>5){
             var data4=[];
             rows2.forEach(r=>{
-                var cells=Array.from(r.children).map(c=>S(c.innerText));
+                var cells=Array.from(r.children).map(c=>S(c.innerText)).filter(Boolean);
                 if(!cells.length){
-                    cells=Array.from(r.querySelectorAll('div,span')).map(c=>S(c.innerText))
+                    cells=Array.from(r.querySelectorAll('div,span')).map(c=>S(c.innerText)).filter(Boolean)
                 }
                 if(cells.length)data4.push(cells)
             });
@@ -63,26 +62,21 @@ function collect(){
     return null
 }
 
-// Fix header so duplicates collapse and cycle
-function fixHeaders(A){
-    if(!A || !A.length) return A;
-    var H = A[0];
-    // Build base headers by skipping duplicates in sequence
-    var base = [];
-    for(var i=0; i<H.length; ){
-        var label = H[i];
-        base.push(label);
+// NEW: header fix
+function fixHeaders(headerRow){
+    var uniqueHeaders = [];
+    for (var i=0; i<headerRow.length; ){
+        var current = headerRow[i];
+        uniqueHeaders.push(current);
         var j=i+1;
-        while(j<H.length && H[j]===label) j++;
+        while(j<headerRow.length && headerRow[j]===current) j++;
         i=j;
     }
-    // Repeat base pattern to match number of columns
     var fixed=[];
-    for(var k=0;k<H.length;k++){
-        fixed.push(base[k % base.length]);
+    for (var k=0;k<headerRow.length;k++){
+        fixed.push(uniqueHeaders[k % uniqueHeaders.length]);
     }
-    A[0]=fixed;
-    return A;
+    return fixed;
 }
 
 function exportData(A){
@@ -90,7 +84,8 @@ function exportData(A){
         alert("No table-like data found.");
         return;
     }
-    A = fixHeaders(A); // Apply header fix here
+    var width=Math.max.apply(null,A.map(r=>r.length));
+    A=A.map(r=>r.concat(Array(Math.max(0,width-r.length)).fill("")));
     function doXLSX(){
         try{
             var ws=XLSX.utils.aoa_to_sheet(A);
@@ -118,8 +113,9 @@ function exportData(A){
 
 var data=collect();
 if(!data){
-    alert("No table found on this page.");
+    alert("No table found on this page. Try scrolling the grid into view, or expanding rows.");
     return;
 }
+data[0] = fixHeaders(data[0]); // only adjust header row
 exportData(data);
 })();
