@@ -1,9 +1,34 @@
 javascript:(function(){
-try {
     function S(s){return s==null?"":String(s).replace(/\s+/g," ").trim()}
     function dl(blob,name){var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
     function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}
     function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}
+    
+    function removeFirstRowDuplicates(data) {
+        if (!data || data.length === 0) return data;
+        
+        const firstRow = data[0];
+        const seen = new Set();
+        const uniqueFirstRow = [];
+        const columnsToKeep = [];
+        
+        // Process first row to remove duplicates
+        firstRow.forEach((value, index) => {
+            if (!seen.has(value)) {
+                seen.add(value);
+                uniqueFirstRow.push(value);
+                columnsToKeep.push(index);
+            }
+        });
+        
+        // If no duplicates found, return original data
+        if (uniqueFirstRow.length === firstRow.length) return data;
+        
+        // Filter all rows to keep only non-duplicate columns
+        return data.map(row => 
+            columnsToKeep.map(colIndex => row[colIndex])
+        );
+    }
 
     function collect(){
         /* 1) Native <table> */
@@ -13,21 +38,24 @@ try {
             t.querySelectorAll("tr").forEach(tr=>{
                 data.push(Array.from(tr.querySelectorAll("th,td")).map(td=>S(td.innerText)))
             });
-            return data.filter(r=>r.length)
+            data = data.filter(r=>r.length);
+            if (data.length) return removeFirstRowDuplicates(data);
         }
+        
         /* 2) ARIA grid */
         var grid=document.querySelector('[role="grid"]');
         if(grid){
             var data2=[],heads=Array.from(grid.querySelectorAll('[role="columnheader"]')).map(h=>S(h.innerText));
-            if(heads.length)data2.push(heads);
+            if(heads.length) data2.push(heads);
             Array.from(grid.querySelectorAll('[role="row"]')).forEach(r=>{
                 if(r.querySelector('[role="columnheader"]'))return;
                 var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"]')).map(c=>S(c.innerText));
                 if(cells.length)data2.push(cells)
             });
-            if(data2.length>0)return data2
+            if(data2.length>0) return removeFirstRowDuplicates(data2);
         }
-        /* 3) Generic div grid */
+        
+        /* 3) Generic div grid: role=row + div cells / tabindex */
         var rows=Array.from(document.querySelectorAll('[role="row"]'));
         if(rows.length){
             var container=pickBiggestContainer(rows);
@@ -36,16 +64,17 @@ try {
                 var data3=[];
                 if(hdr){
                     var h=Array.from(hdr.querySelectorAll('[role="columnheader"],div,span')).map(x=>S(x.innerText)).filter(Boolean);
-                    if(h.length)data3.push(h)
+                    if(h.length) data3.push(h);
                 }
                 Array.from(container.querySelectorAll('[role="row"]')).forEach(r=>{
                     if(r===hdr)return;
                     var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText)).filter((v,i,arr)=>!(arr.length===1 && v===""));
-                    if(cells.length>1||(cells.length===1 && S(cells[0])!==""))data3.push(cells)
+                    if(cells.length>1|| (cells.length===1 && S(cells[0])!==""))data3.push(cells)
                 });
-                if(data3.length>0)return data3
+                if(data3.length>0) return removeFirstRowDuplicates(data3);
             }
         }
+        
         /* 4) Last-resort: dense div grid under a scroller */
         var scrollers=Array.from(document.querySelectorAll('div,section')).filter(el=>{
             var st=getComputedStyle(el);
@@ -62,39 +91,16 @@ try {
                     }
                     if(cells.length)data4.push(cells)
                 });
-                if(data4.length>0)return data4
+                if(data4.length>0) return removeFirstRowDuplicates(data4);
             }
         }
         return null
     }
-
+    
     function exportData(A){
-        if(!A||!A.length){
-            alert("No table-like data found.");
-            return;
-        }
-
-        /* === HEADER CLEANUP: auto-detect duplicate counts === */
-        if (A.length > 0 && A[0].length > 0) {
-            let firstRow = A[0];
-            let cleaned = [];
-            for (let i = 0; i < firstRow.length; ) {
-                let current = firstRow[i];
-                cleaned.push(current);
-                let j = i + 1;
-                while (j < firstRow.length && firstRow[j] === current) {
-                    j++;
-                }
-                i = j;
-            }
-            A[0] = cleaned;
-            // Trim all rows to match cleaned header length
-            A = A.map(r => r.slice(0, cleaned.length));
-        }
-
+        if(!A||!A.length){alert("No table-like data found.");return}
         var width=Math.max.apply(null,A.map(r=>r.length));
         A=A.map(r=>r.concat(Array(Math.max(0,width-r.length)).fill("")));
-
         function doXLSX(){
             try{
                 var ws=XLSX.utils.aoa_to_sheet(A);
@@ -108,7 +114,7 @@ try {
             }
         }
         if(window.XLSX){
-            doXLSX();
+            doXLSX()
         }else{
             var s=document.createElement("script");
             s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
@@ -119,16 +125,7 @@ try {
             document.head.appendChild(s)
         }
     }
-
     var data=collect();
-    if(!data){
-        alert("No table found on this page. Try scrolling the grid into view, or expanding rows.");
-        return;
-    }
+    if(!data){alert("No table found on this page. Try scrolling the grid into view, or expanding rows.");return}
     exportData(data);
-
-} catch(err) {
-    alert("Error during table export: " + err.message);
-    console.error(err);
-}
 })();
