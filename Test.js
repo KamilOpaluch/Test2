@@ -22,7 +22,6 @@ monthly_pattern = re.compile(r".*_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|D
 
 USECOLS = ["LV ID","MSH Level 4","Firm Account","Date","Tot Clean P&L ex Theta","Actual","Rwa Type"]
 
-# Canonical column names we will use everywhere
 WANTED = [
     "MSH Level 4",
     "Firm Account",
@@ -39,11 +38,16 @@ def normalize_cols(cols):
     return [re.sub(r"\s+", " ", str(c)).strip() for c in cols]
 
 def normalize_account_series(s: pd.Series) -> pd.Series:
-    return (
-        s.astype(str)
-         .str.strip()
-         .str.replace(r"\.0$", "", regex=True)
-    )
+    # Keep original face value (no zfill), trim, remove Excel ".0"
+    return s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+
+def make_acc_key(s: pd.Series) -> pd.Series:
+    # Key used for joining: drop leading zeros so "00123" == "123"
+    key = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    key = key.str.lstrip("0")
+    # if everything was zeros, keep "0"
+    key = key.mask(key.eq(""), "0")
+    return key
 
 def ensure_numeric(df: pd.DataFrame, cols):
     for c in cols:
@@ -51,6 +55,16 @@ def ensure_numeric(df: pd.DataFrame, cols):
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
+def entity_hint_from_msh4(s: pd.Series) -> pd.Series:
+    t = s.astype(str).str.upper()
+    hint = pd.Series(pd.NA, index=t.index, dtype="object")
+    hint = hint.mask(t.str.contains(r"\bCGML\b"), "CGML")
+    hint = hint.mask(t.str.contains(r"\bCGME\b"), "CGME")
+    return hint
+
+# -----------------------
+# Loaders
+# -----------------------
 def load_monthly_file(path: Path) -> pd.DataFrame:
     try:
         log.info("Reading monthly file: %s", path.name)
@@ -88,7 +102,11 @@ def load_monthly_file(path: Path) -> pd.DataFrame:
         out = ensure_numeric(out, ["Tot Clean P&L ex Theta", "Actual"])
         out["Rwa Type"] = out["Rwa Type"].astype(str).str.strip()
 
-        # Drop rows without Date or Account (most useful for daily time series)
+        # Add join key + entity hint
+        out["acc_key"] = make_acc_key(out["Firm Account"])
+        out["entity_hint"] = entity_hint_from_msh4(out["MSH Level 4"])
+
+        # Drop rows without Date or Account
         before = len(out)
         out = out.dropna(subset=["Date", "Firm Account"])
         log.info("[%s] Normalized & selected -> %d rows (dropped %d empty-date/account rows)",
@@ -96,8 +114,7 @@ def load_monthly_file(path: Path) -> pd.DataFrame:
         return out
     except Exception as e:
         log.exception("Failed reading %s: %s", path.name, e)
-        # Return empty with correct columns so pipeline continues
-        return pd.DataFrame(columns=WANTED)
+        return pd.DataFrame(columns=WANTED + ["acc_key","entity_hint"])
 
 def load_monthlies(folder: Path) -> pd.DataFrame:
     files = [p for p in folder.glob("*.xlsx") if monthly_pattern.match(p.name)]
@@ -107,11 +124,9 @@ def load_monthlies(folder: Path) -> pd.DataFrame:
     if not files:
         raise FileNotFoundError(f"No monthly *_Mon.xlsx files found in {folder}")
 
-    frames = []
-    for p in files:
-        frames.append(load_monthly_file(p))
+    frames = [load_monthly_file(p) for p in files]
     if not frames:
-        return pd.DataFrame(columns=WANTED)
+        return pd.DataFrame(columns=WANTED + ["acc_key","entity_hint"])
     combined = pd.concat(frames, ignore_index=True)
     log.info("Monthly combined: %d rows, %d unique accounts", len(combined), combined["Firm Account"].nunique())
     return combined
@@ -123,7 +138,7 @@ def load_mtd_adjustments(folder: Path) -> pd.DataFrame:
         df = pd.read_excel(path, sheet_name="Adjustment", engine="openpyxl")
     except Exception as e:
         log.exception("Failed to read %s: %s", path, e)
-        return pd.DataFrame(columns=WANTED)
+        return pd.DataFrame(columns=WANTED + ["acc_key","entity_hint"])
 
     df.columns = normalize_cols(df.columns)
     log.info("[MTD] Raw rows: %d, columns: %d", df.shape[0], df.shape[1])
@@ -149,6 +164,10 @@ def load_mtd_adjustments(folder: Path) -> pd.DataFrame:
     out = ensure_numeric(out, ["Tot Clean P&L ex Theta", "Actual"])
     out["Rwa Type"] = out["Rwa Type"].astype(str).str.strip()
 
+    # Add join key + entity hint (even if not used much for MTD)
+    out["acc_key"] = make_acc_key(out["Firm Account"])
+    out["entity_hint"] = entity_hint_from_msh4(out["MSH Level 4"])
+
     kept = len(out.dropna(subset=["Firm Account"]))
     log.info("[MTD] Prepared rows: %d (Firm Account present), unique accounts: %d",
              kept, out["Firm Account"].nunique())
@@ -158,43 +177,97 @@ def load_mcc_accounts(folder: Path) -> pd.DataFrame:
     path = folder / "mcc.xlsx"
     log.info("Reading account map: %s ('new' & 'old')", path.name)
 
-    def load_sheet(name):
+    def load_sheet(name, source_label):
         try:
             df = pd.read_excel(path, sheet_name=name, engine="openpyxl")
         except Exception as e:
             log.exception("Failed reading %s sheet '%s': %s", path.name, name, e)
-            return pd.DataFrame(columns=["Firm Account", "LEGAL_ENTITY"])
+            return pd.DataFrame(columns=["Firm Account", "LEGAL_ENTITY", "source", "acc_key"])
         df.columns = normalize_cols(df.columns)
         need = ["LEVEL_12", "LEGAL_ENTITY"]
         for c in need:
             if c not in df.columns:
                 df[c] = pd.NA
         out = df[need].copy()
+        # Remove S2 prefix (with optional separators/spaces), keep digits/letters after
         out["Firm Account"] = (
             out["LEVEL_12"].astype(str).str.strip()
-            .str.replace(r"^S2", "", regex=True)
+            .str.replace(r"^S2[\s\-_]*", "", regex=True)
             .str.replace(r"\.0$", "", regex=True)
         )
         out["LEGAL_ENTITY"] = out["LEGAL_ENTITY"].astype(str).str.strip().str.upper()
-        out = out[["Firm Account", "LEGAL_ENTITY"]].dropna(subset=["Firm Account"])
+        out["source"] = source_label
+        out["acc_key"] = make_acc_key(out["Firm Account"])
+        out = out[["Firm Account","acc_key","LEGAL_ENTITY","source"]].dropna(subset=["Firm Account"])
+        # keep both CGML & CGME if present — no dedup here!
         log.info("[mcc:%s] rows=%d, unique accounts=%d", name, len(out), out["Firm Account"].nunique())
         return out
 
-    new_df = load_sheet("new")
-    old_df = load_sheet("old")
-
+    new_df = load_sheet("new", "new")
+    old_df = load_sheet("old", "old")
     combo = pd.concat([new_df, old_df], ignore_index=True)
-    before_dupes = combo.shape[0]
-    combo = combo.drop_duplicates(subset=["Firm Account"], keep="first")
-    dupes_removed = before_dupes - combo.shape[0]
+
+    # Only CGML/CGME rows; keep duplicates (account can belong to both)
     combo = combo[combo["LEGAL_ENTITY"].isin(["CGML", "CGME"])].copy()
-    log.info("[mcc] Combined unique accounts: %d (removed %d duplicates). CGML=%d, CGME=%d",
-             combo.shape[0],
-             dupes_removed,
-             (combo["LEGAL_ENTITY"]=="CGML").sum(),
-             (combo["LEGAL_ENTITY"]=="CGME").sum())
+    log.info(
+        "[mcc] Combined rows=%d | unique accounts=%d | CGML rows=%d | CGME rows=%d (duplicates allowed)",
+        len(combo),
+        combo["Firm Account"].nunique(),
+        (combo["LEGAL_ENTITY"]=="CGML").sum(),
+        (combo["LEGAL_ENTITY"]=="CGME").sum()
+    )
     return combo.reset_index(drop=True)
 
+# -----------------------
+# Entity assignment logic (per-row resolution)
+# -----------------------
+def attach_entity_with_resolution(daily_like: pd.DataFrame, mcc_map: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each row in daily_like, attach a single LEGAL_ENTITY using:
+    1) entity_hint (from MSH Level 4) if matches a mapping row
+    2) otherwise prefer mapping from 'new'
+    3) otherwise take first available mapping row
+
+    Returns daily_like with a 'LEGAL_ENTITY' column.
+    """
+    if daily_like.empty:
+        daily_like["LEGAL_ENTITY"] = pd.NA
+        return daily_like
+
+    work = daily_like.reset_index(drop=False).rename(columns={"index":"_row_id"})
+    merged = work.merge(mcc_map, on="acc_key", how="left", suffixes=("","_map"))
+
+    # If no mapping at all, we will drop later but log first
+    no_map = merged["LEGAL_ENTITY"].isna().groupby(merged["_row_id"]).all()
+    missing_rows = no_map[no_map].index.tolist()
+    if missing_rows:
+        log.warning("Entity mapping missing for %d rows (sample row_ids: %s)",
+                    len(missing_rows), missing_rows[:5])
+
+    # Rank candidates per row_id
+    merged["hint_match"] = merged["LEGAL_ENTITY"].eq(merged["entity_hint"])
+    merged["source_rank"] = merged["source"].map({"new":0, "old":1}).fillna(2).astype(int)
+
+    # Sort: hint matches first, then prefer 'new', then anything
+    merged = merged.sort_values(["_row_id", "hint_match", "source_rank"], ascending=[True, False, True])
+
+    # Keep best candidate per original row
+    picked = merged.drop_duplicates(subset=["_row_id"], keep="first")
+
+    # Diagnostics
+    total = len(work)
+    matched_hint = picked["hint_match"].sum()
+    used_new = ((picked["hint_match"]==False) & (picked["source_rank"]==0)).sum()
+    fallback = ((picked["hint_match"]==False) & (picked["source_rank"]>0)).sum()
+    log.info("Entity resolution: %d rows | hint-matched=%d | prefer-new=%d | fallback=%d",
+             total, matched_hint, used_new, fallback)
+
+    out = picked.drop(columns=["_row_id","hint_match","source_rank","source"])
+    return out
+
+# -----------------------
+# Time series builder
+# -----------------------
 def timeseries(df: pd.DataFrame, entity: str, tb_only: bool) -> pd.DataFrame:
     sub = df[df["LEGAL_ENTITY"] == entity].copy()
     if tb_only:
@@ -229,23 +302,35 @@ log.info("MTD raw: %d rows, %d unique accounts", len(mtd_raw), mtd_raw["Firm Acc
 
 mcc_map = load_mcc_accounts(base)
 
-# 2) Filter to MCC accounts + join LEGAL_ENTITY
-daily_df = daily_raw.merge(mcc_map, on="Firm Account", how="inner")
-mtd_df   = mtd_raw.merge(mcc_map,   on="Firm Account", how="inner")
+# 2) Attach LEGAL_ENTITY per row via conflict-aware resolution
+daily_df = attach_entity_with_resolution(daily_raw, mcc_map)
+mtd_df   = attach_entity_with_resolution(mtd_raw,   mcc_map)
 
-log.info("Daily after MCC filter: %d rows, %d accounts", len(daily_df), daily_df["Firm Account"].nunique())
-log.info("MTD after MCC filter:   %d rows, %d accounts", len(mtd_df),   mtd_df["Firm Account"].nunique())
+# Drop rows where entity could not be mapped
+before_daily = len(daily_df)
+before_mtd   = len(mtd_df)
+daily_df = daily_df[daily_df["LEGAL_ENTITY"].isin(["CGML","CGME"])]
+mtd_df   = mtd_df[mtd_df["LEGAL_ENTITY"].isin(["CGML","CGME"])]
 
-# Coverage diagnostics
-missing_accounts = set(daily_raw["Firm Account"].dropna().unique()) - set(mcc_map["Firm Account"].dropna().unique())
-if missing_accounts:
-    log.warning("Accounts in daily not present in MCC map: %d (showing up to 5): %s",
-                len(missing_accounts), sorted(list(missing_accounts))[:5])
+log.info("Daily after entity attach: %d rows (dropped %d unmapped), accounts=%d, CGML=%d, CGME=%d",
+         len(daily_df), before_daily - len(daily_df),
+         daily_df["Firm Account"].nunique(),
+         (daily_df["LEGAL_ENTITY"]=="CGML").sum(),
+         (daily_df["LEGAL_ENTITY"]=="CGME").sum())
+
+log.info("MTD after entity attach:   %d rows (dropped %d unmapped), accounts=%d, CGML=%d, CGME=%d",
+         len(mtd_df), before_mtd - len(mtd_df),
+         mtd_df["Firm Account"].nunique(),
+         (mtd_df["LEGAL_ENTITY"]=="CGML").sum(),
+         (mtd_df["LEGAL_ENTITY"]=="CGME").sum())
 
 # 3) Combine daily + adjustments (as additional rows)
-all_df = pd.concat([daily_df, mtd_df], ignore_index=True)
-all_df = all_df[WANTED + ["LEGAL_ENTITY"]]
+all_df = pd.concat([daily_df[WANTED + ["LEGAL_ENTITY"]],
+                    mtd_df[WANTED + ["LEGAL_ENTITY"]]], ignore_index=True)
+
+# Sort and tidy
 all_df = all_df.sort_values(["LEGAL_ENTITY", "Date", "Firm Account"], kind="stable").reset_index(drop=True)
+
 log.info("Combined total rows: %d | Unique dates: %d | Unique accounts: %d",
          len(all_df),
          all_df["Date"].nunique(),
@@ -261,12 +346,17 @@ cgme_tb  = timeseries(all_df, "CGME", tb_only=True)
 out_path = base / "pnl_timeseries_summary.xlsx"
 log.info("Writing Excel to: %s", out_path)
 with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
+    # Raw combined rows (with entity)
     all_df.to_excel(xw, sheet_name="Combined_Rows", index=False)
+
+    # For traceability, dump unresolved or ambiguous diagnostics if needed
+    # (Here we just include the union of MCC mappings)
     mcc_map.to_excel(xw, sheet_name="Account_Map", index=False)
+
+    # Time series per entity & scenario
     cgml_all.to_excel(xw, sheet_name="CGML_All", index=False)
     cgml_tb.to_excel(xw,  sheet_name="CGML_TB", index=False)
     cgme_all.to_excel(xw, sheet_name="CGME_All", index=False)
     cgme_tb.to_excel(xw,  sheet_name="CGME_TB", index=False)
 log.info("Excel written successfully.")
-
 log.info("=== Pipeline done ===")
