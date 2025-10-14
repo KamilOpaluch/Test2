@@ -1,78 +1,199 @@
-javascript:(function(){function S(s){return s==null?"":String(s).replace(/\s+/g," ").trim()}
-function dl(blob,name){var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
-function toCSV(arr){return arr.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n")}
-function pickBiggestContainer(rows){if(rows.length===0)return null;let best=null,bestCount=0;rows.forEach(r=>{let p=r.parentElement;while(p&&p!==document.body){const c=p.querySelectorAll('[role="row"]').length;if(c>bestCount){best=p;bestCount=c}p=p.parentElement}});return best||rows[0].parentElement}
-function collect(){var t=document.querySelector("table");if(t){var data=[];t.querySelectorAll("tr").forEach(tr=>{data.push(Array.from(tr.querySelectorAll("th,td")).map(td=>S(td.innerText)))});return data.filter(r=>r.length)}
-var grid=document.querySelector('[role="grid"]');if(grid){var data2=[],heads=Array.from(grid.querySelectorAll('[role="columnheader"]')).map(h=>S(h.innerText));if(heads.length)data2.push(heads);Array.from(grid.querySelectorAll('[role="row"]')).forEach(r=>{if(r.querySelector('[role="columnheader"]'))return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"]')).map(c=>S(c.innerText));if(cells.length)data2.push(cells)});if(data2.length>0)return data2}
-var rows=Array.from(document.querySelectorAll('[role="row"]'));if(rows.length){var container=pickBiggestContainer(rows);if(container){var hdr=Array.from(container.querySelectorAll('[role="row"]')).find(r=>r.querySelector('[role="columnheader"]'));var data3=[];if(hdr){var h=Array.from(hdr.querySelectorAll('[role="columnheader"],div,span')).map(x=>S(x.innerText)).filter(Boolean);if(h.length)data3.push(h)}Array.from(container.querySelectorAll('[role="row"]')).forEach(r=>{if(r===hdr)return;var cells=Array.from(r.querySelectorAll('[role="gridcell"],[role="cell"],div[tabindex]')).map(c=>S(c.innerText));if(cells.some(v=>v!==""))data3.push(cells)});if(data3.length>0)return data3}}
-var scrollers=Array.from(document.querySelectorAll('div,section')).filter(el=>{var st=getComputedStyle(el);return /(auto|scroll)/.test(st.overflow+st.overflowY+st.overflowX)});for(const sc of scrollers){var rows2=Array.from(sc.querySelectorAll('div[tabindex],[data-row-index]'));if(rows2.length>5){var data4=[];rows2.forEach(r=>{var cells=Array.from(r.children).map(c=>S(c.innerText));if(!cells.length){cells=Array.from(r.querySelectorAll('div,span')).map(c=>S(c.innerText))}if(cells.length)data4.push(cells)});if(data4.length>0)return data4}}
-return null}
+import pandas as pd
+import re
+from pathlib import Path
 
-/* keep your original header-blanking step */
-function tidyHeaderRowOnly(A,repeat){if(!A||!A.length)return A;var h=A[0].slice();var rep=repeat||5;for(var i=0;i<h.length;i++){if(i%rep!==0)h[i]="";}A[0]=h;return A}
+# -----------------------
+# Config / Paths
+# -----------------------
+base = Path.home() / "Documents" / "IMA_Extend"
+monthly_pattern = re.compile(r".*_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.xlsx$", re.IGNORECASE)
 
-/* --- NEW helpers to treat hidden junk as empty --- */
-function norm(v){return S(String(v??"").replace(/\u00A0/g," ").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/[\x00-\x1F\x7F]/g,""))}
-function hasLetter(s){return /[\p{L}]/u.test(s)}         // legit header = has a letter
-function hasAlphaNum(s){return /[\p{L}\p{N}]/u.test(s)}  // visible data = letter or digit
+# Canonical column names we will use everywhere
+WANTED = [
+    "MSH Level 4",
+    "Firm Account",
+    "Date",
+    "Tot Clean P&L ex Theta",
+    "Actual",
+    "Rwa Type",
+]
 
-/* slide only legit headers left across columns whose data are truly empty (after cleanup) */
-function compactHeadersSmart(A){
-  if(!A||A.length<2)return A;
-  var n=A[0].length, rows=A.slice(1);
+# -----------------------
+# Helpers
+# -----------------------
+def normalize_cols(cols):
+    """Trim and collapse inner spaces in column names."""
+    return [re.sub(r"\s+", " ", str(c)).strip() for c in cols]
 
-  // columns that are "empty" even if they contain hidden metadata
-  var emptyCol=new Array(n).fill(true);
-  for(var r=0;r<rows.length;r++){
-    var row=rows[r];
-    for(var c=0;c<n;c++){
-      if(hasAlphaNum(norm(row[c]))){ emptyCol[c]=false; }
-    }
-  }
+def normalize_account_series(s: pd.Series) -> pd.Series:
+    """Firm Account as string; trim; strip trailing .0 from Excel; preserve leading zeros."""
+    return (
+        s.astype(str)
+         .str.strip()
+         .str.replace(r"\.0$", "", regex=True)
+    )
 
-  // move headers that contain letters to the left over empty columns only
-  var h=A[0].map(norm);
-  var newH=new Array(n).fill("");
-  var nextFree=0;
-  for(var c=0;c<n;c++){
-    if(hasLetter(h[c])){
-      while(nextFree<c && (emptyCol[nextFree]===false || newH[nextFree]!=="" )) nextFree++;
-      if(nextFree<c && emptyCol[nextFree]===true && newH[nextFree]===""){
-        newH[nextFree]=h[c]; nextFree++;
-      }else{
-        newH[c]=h[c];
-        if(emptyCol[c]===true) nextFree=c+1;
-      }
-    }
-  }
-  A[0]=newH; return A;
-}
+def ensure_numeric(df: pd.DataFrame, cols):
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
 
-function exportData(A){
-  if(!A||!A.length){alert("No table-like data found.");return}
-  A=tidyHeaderRowOnly(A,5);        /* your output preserved */
-  A=compactHeadersSmart(A);        /* then compact left safely */
+def load_monthly_file(path: Path) -> pd.DataFrame:
+    # Row 12 has headers -> header index 11
+    df = pd.read_excel(path, header=11, engine="openpyxl", dtype={"LV ID": str})
+    df.columns = normalize_cols(df.columns)
 
-  function doXLSX(){try{
-    var ws=XLSX.utils.aoa_to_sheet(A);
-    var wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,"Sheet1");
-    var out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
-    dl(new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),"pvalue.xlsx")
-  }catch(e){
-    console.warn("XLSX failed, falling back to CSV:",e);
-    dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")
-  }}
-  if(window.XLSX){doXLSX()}else{
-    var s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-    s.onload=doXLSX;
-    s.onerror=function(){dl(new Blob([toCSV(A)],{type:"text/csv;charset=utf-8;"}),"pvalue.csv")};
-    document.head.appendChild(s)
-  }
-}
+    # Filter LV ID == "06500" (if available)
+    if "LV ID" in df.columns:
+        lv = (
+            df["LV ID"].astype(str).str.strip()
+              .str.replace(r"\.0$", "", regex=True)
+              .str.zfill(5)
+        )
+        df = df[lv == "06500"]
 
-var data=collect();
-if(!data){alert("No table found on this page.");return}
-exportData(data);
-})();
+    # Harmonize columns
+    # Handle possible variants like leading spaces that were normalized already
+    # Create empty cols if missing
+    for c in WANTED:
+        if c not in df.columns:
+            df[c] = pd.NA
+
+    out = df[WANTED].copy()
+    out["Firm Account"] = normalize_account_series(out["Firm Account"])
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out = ensure_numeric(out, ["Tot Clean P&L ex Theta", "Actual"])
+    # Normalize Rwa Type values
+    out["Rwa Type"] = out["Rwa Type"].astype(str).str.strip()
+    return out.dropna(subset=["Date", "Firm Account"])
+
+def load_monthlies(folder: Path) -> pd.DataFrame:
+    files = [p for p in folder.glob("*.xlsx") if monthly_pattern.match(p.name)]
+    if not files:
+        raise FileNotFoundError(f"No monthly *_Mon.xlsx files found in {folder}")
+    frames = [load_monthly_file(p) for p in files]
+    if not frames:
+        return pd.DataFrame(columns=WANTED)
+    return pd.concat(frames, ignore_index=True)
+
+def load_mtd_adjustments(folder: Path) -> pd.DataFrame:
+    # Exact filename per instruction
+    path = folder / "MTD_adjusmtents.xlsx"
+    df = pd.read_excel(path, sheet_name="Adjustment", engine="openpyxl")
+    df.columns = normalize_cols(df.columns)
+
+    # Optional LV ID filter if present (align to 06500)
+    if "LV ID" in df.columns:
+        lv = (
+            df["LV ID"].astype(str).str.strip()
+              .str.replace(r"\.0$", "", regex=True)
+              .str.zfill(5)
+        )
+        df = df[lv == "06500"]
+
+    # Ensure all wanted columns exist
+    for c in WANTED:
+        if c not in df.columns:
+            df[c] = pd.NA
+
+    out = df[WANTED].copy()
+    out["Firm Account"] = normalize_account_series(out["Firm Account"])
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out = ensure_numeric(out, ["Tot Clean P&L ex Theta", "Actual"])
+    out["Rwa Type"] = out["Rwa Type"].astype(str).str.strip()
+    return out.dropna(subset=["Firm Account"])  # date may be NaT in some adjustments; we keep rows with missing date? Prefer having Date; filter if you must
+
+def load_mcc_accounts(folder: Path) -> pd.DataFrame:
+    path = folder / "mcc.xlsx"
+
+    def load_sheet(name):
+        df = pd.read_excel(path, sheet_name=name, engine="openpyxl")
+        df.columns = normalize_cols(df.columns)
+        # Expect LEVEL_12, LEGAL_ENTITY
+        need = ["LEVEL_12", "LEGAL_ENTITY"]
+        for c in need:
+            if c not in df.columns:
+                df[c] = pd.NA
+        out = df[need].copy()
+        # Remove S2 prefix from accounts, keep as string, preserve leading zeros after prefix
+        out["Firm Account"] = (
+            out["LEVEL_12"].astype(str).str.strip()
+            .str.replace(r"^S2", "", regex=True)
+            .str.replace(r"\.0$", "", regex=True)
+        )
+        out["LEGAL_ENTITY"] = out["LEGAL_ENTITY"].astype(str).str.strip().str.upper()
+        return out[["Firm Account", "LEGAL_ENTITY"]].dropna(subset=["Firm Account"])
+
+    new_df = load_sheet("new")
+    old_df = load_sheet("old")
+
+    # Prefer "new" mapping if duplicates
+    # Combine and drop duplicates keeping first occurrence (new first)
+    combo = pd.concat([new_df, old_df], ignore_index=True)
+    combo = combo.drop_duplicates(subset=["Firm Account"], keep="first")
+    # Keep only CGML / CGME rows if others exist
+    combo = combo[combo["LEGAL_ENTITY"].isin(["CGML", "CGME"])].copy()
+    return combo.reset_index(drop=True)
+
+# -----------------------
+# Orchestration
+# -----------------------
+# Load pieces
+daily_df = load_monthlies(base)
+mtd_df = load_mtd_adjustments(base)
+mcc_map = load_mcc_accounts(base)
+
+# Filter to MCC accounts (old ∪ new) and attach LEGAL_ENTITY
+daily_df = daily_df.merge(mcc_map, on="Firm Account", how="inner")
+mtd_df   = mtd_df.merge(mcc_map,   on="Firm Account", how="inner")
+
+# Combine daily P&L and adjustments as additional rows
+all_df = pd.concat([daily_df, mtd_df], ignore_index=True)
+
+# Final cleanup / ordering
+all_df = all_df[WANTED + ["LEGAL_ENTITY"]]
+all_df = all_df.sort_values(["LEGAL_ENTITY", "Date", "Firm Account"], kind="stable").reset_index(drop=True)
+
+# -----------------------
+# Build time-series summaries
+# -----------------------
+def timeseries(df: pd.DataFrame, entity: str, tb_only: bool) -> pd.DataFrame:
+    sub = df[df["LEGAL_ENTITY"] == entity].copy()
+    if tb_only:
+        # 'TB' match case-insensitive and after trimming
+        sub = sub[sub["Rwa Type"].astype(str).str.strip().str.upper() == "TB"]
+    # Sum by date across all accounts
+    agg = (
+        sub.groupby("Date", as_index=False)[["Tot Clean P&L ex Theta", "Actual"]]
+           .sum()
+           .sort_values("Date", kind="stable")
+    )
+    return agg
+
+cgml_all = timeseries(all_df, "CGML", tb_only=False)
+cgml_tb  = timeseries(all_df, "CGML", tb_only=True)
+cgme_all = timeseries(all_df, "CGME", tb_only=False)
+cgme_tb  = timeseries(all_df, "CGME", tb_only=True)
+
+# -----------------------
+# Write Excel output
+# -----------------------
+out_path = base / "pnl_timeseries_summary.xlsx"
+with pd.ExcelWriter(out_path, engine="openpyxl") as xw:
+    # Raw combined rows (optional but handy for QA)
+    all_df.to_excel(xw, sheet_name="Combined_Rows", index=False)
+
+    # Account mapping (for traceability)
+    mcc_map.to_excel(xw, sheet_name="Account_Map", index=False)
+
+    # Time series per entity & scenario
+    cgml_all.to_excel(xw, sheet_name="CGML_All", index=False)
+    cgml_tb.to_excel(xw,  sheet_name="CGML_TB", index=False)
+    cgme_all.to_excel(xw, sheet_name="CGME_All", index=False)
+    cgme_tb.to_excel(xw,  sheet_name="CGME_TB", index=False)
+
+print("Done.")
+print(f"Daily rows (race clean): {len(daily_df)}")
+print(f"Adjustment rows: {len(mtd_df)}")
+print(f"Output written to: {out_path}")
