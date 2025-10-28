@@ -1,5 +1,6 @@
 # access_table_sizes.py
 import os
+import re
 import sys
 import csv
 from datetime import datetime
@@ -10,13 +11,13 @@ try:
 except ImportError:
     raise SystemExit("Requires pywin32. Install with: pip install pywin32")
 
-# ---- Estimation tunables ----
+# ---------- Estimation tunables ----------
 ROW_OVERHEAD_BYTES = 24
 INDEX_OVERHEAD_MULT = 1.10
 DEFAULT_AVG_MEMO_CHARS = 200
 DEFAULT_TEXT_FILL = 0.5
 
-# ---- DAO constants ----
+# ---------- DAO constants ----------
 DB_BOOLEAN = 1
 DB_BYTE = 2
 DB_INTEGER = 3
@@ -36,10 +37,32 @@ DB_ATTACHMENT = 101
 DB_OPEN_TABLE = 1
 DB_OPEN_SNAPSHOT = 4
 
-# ----------------- Access attach helpers -----------------
+ACC_EXT_RX = re.compile(r'(?:"|\')?([A-Za-z]:[^"\']+\.(?:accdb|mdb))(?:"|\')?', re.IGNORECASE)
+
+# ---------- Helpers to open DB without relying on UI attachment ----------
+
+def make_dao_engine():
+    """Create a DAO DBEngine (works even if no Access UI is attached)."""
+    # Try modern ACE first, then older DAO
+    for progid in ("DAO.DBEngine.120", "DAO.DBEngine.36"):
+        try:
+            return win32.Dispatch(progid)
+        except Exception:
+            continue
+    raise RuntimeError("Could not create DAO.DBEngine (ACE/DAO not installed?).")
+
+def open_db_direct(full_path):
+    """Open an Access DB file via DAO directly."""
+    full_path = os.path.abspath(full_path)
+    engine = make_dao_engine()
+    ws = engine.Workspaces(0)
+    db = ws.OpenDatabase(full_path)
+    _ = db.TableDefs.Count  # sanity
+    return db, full_path, os.path.basename(full_path)
+
+# ---------- Try to attach to running Access instances (optional) ----------
 
 def enumerate_access_instances():
-    """Return a list of running Access.Application COM objects by enumerating the ROT."""
     apps = []
     ctx = pythoncom.CreateBindCtx(0)
     rot = pythoncom.GetRunningObjectTable()
@@ -53,17 +76,17 @@ def enumerate_access_instances():
             name = mk.GetDisplayName(ctx, None)
         except pythoncom.com_error:
             continue
+        # Access.Application moniker
         if "Access.Application" in name or name.lower().endswith("!{73fddc80-aea9-101a-98a7-00aa00374959}"):
             try:
-                obj = rot.GetObject(mk)   # IUnknown
-                app = win32.Dispatch(obj) # Wrap for late-binding
-                apps.append(app)
+                obj = rot.GetObject(mk)
+                apps.append(win32.Dispatch(obj))
             except Exception:
                 pass
     return apps
 
-def get_active_db_path_from_app(app):
-    """Try both Access object model paths; return (db_handle, full_path, base_name) or (None, '', '')."""
+def try_get_active_db_from_app(app):
+    """Return (db, full_path, base_name) or (None, '', '')."""
     # Try CurrentProject.FullName
     try:
         full = str(app.CurrentProject.FullName)
@@ -87,58 +110,61 @@ def get_active_db_path_from_app(app):
         pass
     return None, "", ""
 
-def open_db_via_engine(app, full_path):
-    """Open a DAO.Database via the instance's DBEngine."""
-    ws0 = app.DBEngine.Workspaces(0)
-    db = ws0.OpenDatabase(full_path)
-    _ = db.TableDefs.Count  # sanity
-    return db
-
-def pick_database(name_fragment="", explicit_path=None):
-    """
-    Find a running Access instance with an open DB that matches name_fragment.
-    If explicit_path is given, open that path via any found instance's DBEngine.
-    """
+def find_running_access_db_by_fragment(fragment):
+    """Attach to a running Access window whose open file matches the fragment."""
     apps = enumerate_access_instances()
     if not apps:
-        raise RuntimeError("No running Access.Application instances found. Open your .accdb and try again.")
-
-    # If an explicit path is provided, try to open it via the first instance's DBEngine.
-    if explicit_path:
-        explicit_path = os.path.abspath(explicit_path)
-        for app in apps:
-            try:
-                db = open_db_via_engine(app, explicit_path)
-                return app, db, explicit_path, os.path.basename(explicit_path)
-            except Exception:
-                continue
-        raise RuntimeError(f"Could not open database via DAO at: {explicit_path}")
-
-    # Otherwise, search each instance for an already-open DB
+        return None  # no UI instances visible via ROT
     candidates = []
     for app in apps:
-        db, full, base = get_active_db_path_from_app(app)
+        db, full, base = try_get_active_db_from_app(app)
         if db and full:
-            candidates.append((app, db, full, base))
-
+            candidates.append((db, full, base))
     if not candidates:
-        raise RuntimeError("Found Access instances, but none reported an open database "
-                           "(window without file, or insufficient permissions).")
+        return None
+    frag = fragment.lower()
+    for db, full, base in candidates:
+        if frag in base.lower():
+            return db, full, base
+    # Fallback: first one
+    return candidates[0]
 
-    # Prefer a candidate whose filename contains the fragment
-    if name_fragment:
-        frag = name_fragment.lower()
-        for app, db, full, base in candidates:
-            if frag in base.lower():
-                return app, db, full, base
+# ---------- Fallback: find Access DB via WMI process command lines ----------
 
-    # Fallback: return the first open DB and warn
-    app, db, full, base = candidates[0]
-    if name_fragment:
-        print(f"[warn] No open database matching '{name_fragment}'. Using '{base}'.")
-    return app, db, full, base
+def wmi_find_access_paths():
+    """Return list of .accdb/.mdb paths found in msaccess.exe command lines."""
+    paths = []
+    try:
+        wmi = win32.GetObject("winmgmts:")
+        procs = wmi.ExecQuery("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='MSACCESS.EXE'")
+        for p in procs:
+            cmd = (p.CommandLine or "")
+            # Find any .accdb/.mdb in the command line
+            matches = ACC_EXT_RX.findall(cmd)
+            for m in matches:
+                if os.path.isfile(m):
+                    paths.append(os.path.abspath(m))
+    except Exception:
+        pass
+    # De-dup while preserving order
+    seen = set()
+    uniq = []
+    for p in paths:
+        if p.lower() not in seen:
+            uniq.append(p)
+            seen.add(p.lower())
+    return uniq
 
-# ----------------- DAO helpers -----------------
+def pick_db_path_by_fragment(paths, fragment):
+    if not fragment:
+        return paths[0] if paths else None
+    frag = fragment.lower()
+    for p in paths:
+        if frag in os.path.basename(p).lower():
+            return p
+    return paths[0] if paths else None
+
+# ---------- Table size estimation ----------
 
 def iter_collection(coll):
     cnt = int(coll.Count)
@@ -159,7 +185,7 @@ def is_user_local_table(tdef):
         return False
     try:
         if len(str(tdef.Connect)) > 0:
-            return False  # linked
+            return False  # linked table
     except Exception:
         pass
     return True
@@ -195,7 +221,7 @@ def estimated_row_bytes(tdef, avg_memo_chars, text_fill):
     return total
 
 def fast_row_count(db, table_name):
-    # Try dbOpenTable
+    # Try dbOpenTable for instant count
     try:
         rs = db.OpenRecordset(table_name, DB_OPEN_TABLE)
         rc = int(rs.RecordCount)
@@ -273,7 +299,7 @@ def print_table(results, top_n=None):
     for r in rows:
         print(f"{r['TableName'].ljust(name_w)}  {r['Rows']:>12}  {r['EstMB']:>10.3f}  {r['Notes']}")
 
-# ----------------- Main -----------------
+# ---------- Arg parsing & main ----------
 
 def parse_args():
     frag = None
@@ -283,24 +309,49 @@ def parse_args():
             path = arg.split("=", 1)[1].strip('"').strip("'")
         else:
             frag = arg
+    if frag is None and path is None:
+        frag = "IMA_CGME"  # default convenience
     return frag, path
 
 def main():
-    frag, path = parse_args()
-    if frag is None and path is None:
-        frag = "IMA_CGME"  # default convenience
+    pythoncom.CoInitialize()
+    try:
+        frag, explicit_path = parse_args()
 
-    app, db, full_path, base = pick_database(name_fragment=(frag or ""), explicit_path=path)
-    print(f"Using Access {getattr(app, 'Version', '?.?')} | DB: {full_path}")
+        # 1) If we got a path, just open it directly via DAO
+        if explicit_path:
+            db, full, base = open_db_direct(explicit_path)
+        else:
+            # 2) Try to attach to a running Access instance that has a DB open
+            attached = find_running_access_db_by_fragment(frag)
+            if attached:
+                db, full, base = attached
+            else:
+                # 3) Try to read the DB path from msaccess.exe command lines
+                paths = wmi_find_access_paths()
+                target = pick_db_path_by_fragment(paths, frag)
+                if not target:
+                    raise RuntimeError("Could not find an open Access DB via COM or WMI. "
+                                       "Run with --path=\"C:\\full\\path\\YourDb.accdb\" "
+                                       "or start Access by double-clicking the .accdb so the path "
+                                       "appears in the process command line.")
+                db, full, base = open_db_direct(target)
 
-    results = list_tables_estimates(db)
-    out_dir = os.path.dirname(full_path)
-    out_base = os.path.splitext(base)[0]
-    out_csv = os.path.join(out_dir, f"{out_base}_table_sizes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-    save_csv(results, out_csv)
+        print(f"DB: {full}")
+        results = list_tables_estimates(db)
+        out_dir = os.path.dirname(full)
+        out_base = os.path.splitext(base)[0]
+        out_csv = os.path.join(out_dir, f"{out_base}_table_sizes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        save_csv(results, out_csv)
+        print_table(results)
+        print(f"\nSaved: {out_csv}")
 
-    print_table(results)
-    print(f"\nSaved: {out_csv}")
+    finally:
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
+        
