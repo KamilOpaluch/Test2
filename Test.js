@@ -10,12 +10,12 @@ except ImportError:
     raise SystemExit("pywin32 is required. Install with: pip install pywin32")
 
 # ---- Estimation tunables ----
-ROW_OVERHEAD_BYTES = 24              # rough per-row overhead
-INDEX_OVERHEAD_MULT = 1.10           # add ~10% for indexes
-DEFAULT_AVG_MEMO_CHARS = 200         # assumed avg length for Long Text (Memo)
-DEFAULT_TEXT_FILL = 0.5              # fraction of Short Text max length used
+ROW_OVERHEAD_BYTES = 24
+INDEX_OVERHEAD_MULT = 1.10
+DEFAULT_AVG_MEMO_CHARS = 200
+DEFAULT_TEXT_FILL = 0.5
 
-# ---- DAO type constants (subset) ----
+# ---- DAO constants ----
 DB_BOOLEAN = 1
 DB_BYTE = 2
 DB_INTEGER = 3
@@ -25,89 +25,103 @@ DB_SINGLE = 6
 DB_DOUBLE = 7
 DB_DATE = 8
 DB_BINARY = 9
-DB_TEXT = 10            # Short Text
-DB_LONG_BINARY = 11     # OLE Object
-DB_MEMO = 12            # Long Text
+DB_TEXT = 10
+DB_LONG_BINARY = 11
+DB_MEMO = 12
 DB_GUID = 15
 DB_DECIMAL = 20
-DB_ATTACHMENT = 101     # Attachment (ACE)
+DB_ATTACHMENT = 101
 
-# OpenRecordset types
 DB_OPEN_TABLE = 1
 DB_OPEN_SNAPSHOT = 4
 
 def attach_access():
-    """Attach to the already-running Access.Application."""
     try:
-        return win32.GetActiveObject("Access.Application")
+        app = win32.GetActiveObject("Access.Application")
+        return app
     except Exception as e:
-        raise RuntimeError("No running Microsoft Access instance found. Open your database first.") from e
+        raise RuntimeError("No running Microsoft Access instance found. Open your .accdb and try again.") from e
 
 def iter_collection(coll):
-    """Iterate a COM collection that may be 0- or 1-based."""
-    count = int(coll.Count)
+    cnt = int(coll.Count)
     # Try 0-based
     try:
-        for i in range(count):
+        for i in range(cnt):
             yield coll.Item(i)
         return
     except Exception:
         pass
     # Fallback 1-based
-    for i in range(1, count + 1):
+    for i in range(1, cnt + 1):
         yield coll.Item(i)
 
 def pick_open_database(app, name_fragment=""):
-    """
-    Use the UI-active database for this Access instance.
-    If a name fragment is provided and doesn't match, warn but continue.
-    """
-    db = app.CurrentDb()  # DAO.Database handle for the active file
-    full = str(app.CurrentProject.FullName)  # full path
-    base = os.path.basename(full)
+    # Get the active file path
+    try:
+        full_path = str(app.CurrentProject.FullName)
+    except Exception as e:
+        raise RuntimeError("Attached Access instance has no database open.") from e
+
+    base = os.path.basename(full_path)
+    if not base:
+        raise RuntimeError("Could not resolve active database path from Access.")
+
     if name_fragment and name_fragment.lower() not in base.lower():
-        print(f"[warn] Active Access DB is '{base}', which doesn't match fragment '{name_fragment}'. "
-              f"Proceeding with the active DB.")
-    return db, full, base
+        print(f"[warn] Active Access DB is '{base}', not matching fragment '{name_fragment}'. Proceeding with the active DB.")
+
+    # 1) Try CurrentDb()
+    db = None
+    try:
+        db = app.CurrentDb()
+        # sanity access
+        _ = db.TableDefs.Count
+        return db, full_path, base
+    except Exception:
+        db = None
+
+    # 2) Fallback: open via the same Access instance's DAO DBEngine
+    try:
+        ws0 = app.DBEngine.Workspaces(0)
+        db = ws0.OpenDatabase(full_path)
+        # sanity access
+        _ = db.TableDefs.Count
+        return db, full_path, base
+    except Exception as e:
+        raise RuntimeError("Failed to obtain a DAO.Database handle for the active file.") from e
 
 def is_user_local_table(tdef):
-    """Local, non-system, non-linked table?"""
     name = str(tdef.Name)
     if name.startswith("MSys"):
         return False
-    # Linked if Connect string present
     try:
         if len(str(tdef.Connect)) > 0:
-            return False
+            return False  # linked table: lives elsewhere
     except Exception:
         pass
     return True
 
 def field_size_bytes(fld, avg_memo_chars=DEFAULT_AVG_MEMO_CHARS, text_fill=DEFAULT_TEXT_FILL):
-    """Estimated per-row storage for a field."""
     ftype = int(fld.Type)
-    # Some types expose fld.Size (Short Text max length, Binary length, etc.)
-    fsize = 0
     try:
         fsize = int(fld.Size)
     except Exception:
-        pass
+        fsize = 0
 
-    if ftype == DB_BOOLEAN:        return 1
-    if ftype == DB_BYTE:           return 1
-    if ftype == DB_INTEGER:        return 2
-    if ftype == DB_LONG:           return 4
-    if ftype == DB_SINGLE:         return 4
-    if ftype == DB_DOUBLE:         return 8
-    if ftype == DB_CURRENCY:       return 8
-    if ftype == DB_DECIMAL:        return 12
-    if ftype == DB_DATE:           return 8
-    if ftype == DB_GUID:           return 16
-    if ftype == DB_BINARY:         return max(fsize, 0)
-    if ftype == DB_TEXT:           return int(round((fsize * 2) * text_fill))  # Unicode chars
-    if ftype == DB_MEMO:           return int(avg_memo_chars * 2)              # Long Text average
+    if ftype == DB_BOOLEAN:  return 1
+    if ftype == DB_BYTE:     return 1
+    if ftype == DB_INTEGER:  return 2
+    if ftype == DB_LONG:     return 4
+    if ftype == DB_SINGLE:   return 4
+    if ftype == DB_DOUBLE:   return 8
+    if ftype == DB_CURRENCY: return 8
+    if ftype == DB_DECIMAL:  return 12
+    if ftype == DB_DATE:     return 8
+    if ftype == DB_GUID:     return 16
+    if ftype == DB_BINARY:   return max(fsize, 0)
+    if ftype == DB_TEXT:     return int(round((fsize * 2) * text_fill))
+    if ftype == DB_MEMO:     return int(avg_memo_chars * 2)
     if ftype in (DB_LONG_BINARY, DB_ATTACHMENT):
-        return 0  # unknown; will be flagged
+        return 0  # unknown, flagged elsewhere
     return 0
 
 def estimated_row_bytes(tdef, avg_memo_chars, text_fill):
@@ -117,8 +131,7 @@ def estimated_row_bytes(tdef, avg_memo_chars, text_fill):
     return total
 
 def fast_row_count(db, table_name):
-    """Try table-type recordset for instant count; fallback to COUNT(*)."""
-    # dbOpenTable: instant count for native Access tables
+    # Try dbOpenTable for instant count
     try:
         rs = db.OpenRecordset(table_name, DB_OPEN_TABLE)
         rc = int(rs.RecordCount)
@@ -145,7 +158,6 @@ def list_tables_estimates(db, avg_memo_chars=DEFAULT_AVG_MEMO_CHARS, text_fill=D
             continue
 
         notes = []
-        # Pre-flag heavy/variable types
         try:
             for fld in iter_collection(tdef.Fields):
                 ftype = int(fld.Type)
@@ -176,7 +188,6 @@ def list_tables_estimates(db, avg_memo_chars=DEFAULT_AVG_MEMO_CHARS, text_fill=D
             "EstMB": est_bytes / (1024 * 1024),
             "Notes": ";".join(sorted(set(notes))) if notes else ""
         })
-    # Sort by estimated MB desc
     results.sort(key=lambda r: r["EstMB"], reverse=True)
     return results
 
@@ -202,6 +213,8 @@ def main(name_fragment="IMA_CGME", avg_memo_chars=DEFAULT_AVG_MEMO_CHARS, text_f
     app = attach_access()
     db, full_path, base = pick_open_database(app, name_fragment)
 
+    print(f"Attached to Access {getattr(app, 'Version', '?.?')} | Active DB: {full_path}")
+
     results = list_tables_estimates(db, avg_memo_chars=avg_memo_chars, text_fill=text_fill)
 
     out_dir = os.path.dirname(full_path)
@@ -209,12 +222,9 @@ def main(name_fragment="IMA_CGME", avg_memo_chars=DEFAULT_AVG_MEMO_CHARS, text_f
     out_csv = os.path.join(out_dir, f"{out_base}_table_sizes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     save_csv(results, out_csv)
 
-    print(f"Active DB: {full_path}")
     print_table(results)
     print(f"\nSaved: {out_csv}")
 
 if __name__ == "__main__":
-    # Usage: python access_table_sizes.py [name_fragment]
     fragment = sys.argv[1] if len(sys.argv) > 1 else "IMA_CGME"
     main(fragment)
-    
